@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from towbintools.deep_learning.utils import loss
+from align_toolbox.deep_learning.utils import loss
 
 
 def test_focal_tversky_is_near_zero_for_perfect_prediction():

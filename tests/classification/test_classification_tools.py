@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import xgboost
 
-from towbintools.classification import classification_tools as ct
-from towbintools.foundation.worm_features import intensity_std
+from align_toolbox.classification import classification_tools as ct
+from align_toolbox.foundation.worm_features import intensity_std
 
 FEATURES_DICT = {
     "all_features": ["area", "intensity_mean"],

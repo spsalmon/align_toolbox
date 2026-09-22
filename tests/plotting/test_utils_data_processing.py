@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.plotting import utils_data_processing as udp
+from align_toolbox.plotting import utils_data_processing as udp
 
 
 @pytest.fixture

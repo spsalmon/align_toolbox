@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from tifffile import imwrite
 
-from towbintools.foundation import image_handling
+from align_toolbox.foundation import image_handling
 
 
 @pytest.mark.parametrize("shape", [(5, 7), (3, 5, 7), (2, 3, 5, 7)])
@@ -222,9 +222,7 @@ def test_metadata_helpers_return_none_for_plain_tiff(tmp_path):
 
 def test_get_acquisition_date_reads_ome_metadata(tmp_path):
     from ome_types import to_xml
-    from ome_types.model import Image
-    from ome_types.model import OME
-    from ome_types.model import Pixels
+    from ome_types.model import OME, Image, Pixels
 
     acquired = datetime(2024, 3, 1, 12, 30)
     ome = OME(

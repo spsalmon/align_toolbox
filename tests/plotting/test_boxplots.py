@@ -2,7 +2,7 @@ import matplotlib.figure
 import numpy as np
 import pytest
 
-from towbintools.plotting import boxplots
+from align_toolbox.plotting import boxplots
 
 
 @pytest.fixture

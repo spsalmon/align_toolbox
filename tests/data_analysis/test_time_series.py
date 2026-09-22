@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.data_analysis import time_series as ts
+from align_toolbox.data_analysis import time_series as ts
 
 TIME = np.arange(100.0)
 LINEAR = 2 * TIME + 3

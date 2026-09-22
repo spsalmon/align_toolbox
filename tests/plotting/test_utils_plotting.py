@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from towbintools.plotting import utils_plotting as up
+from align_toolbox.plotting import utils_plotting as up
 
 
 def test_save_figure_creates_directory(tmp_path):

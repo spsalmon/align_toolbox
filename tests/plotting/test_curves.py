@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.plotting import curves
+from align_toolbox.plotting import curves
 
 
 @pytest.mark.parametrize(

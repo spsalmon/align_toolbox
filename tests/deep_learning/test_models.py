@@ -2,13 +2,12 @@ import pytest
 import pytorch_lightning as pl
 import timm
 import torch
-from torch.utils.data import DataLoader
-from torch.utils.data import TensorDataset
+from torch.utils.data import DataLoader, TensorDataset
 
-from towbintools.deep_learning import deep_learning_tools as dlt
-from towbintools.deep_learning.architectures import models
-from towbintools.deep_learning.utils.dataset import KeypointDetection1DTrainingDataset
-from towbintools.deep_learning.utils.loss import FocalTverskyLoss
+from align_toolbox.deep_learning import deep_learning_tools as dlt
+from align_toolbox.deep_learning.architectures import models
+from align_toolbox.deep_learning.utils.dataset import KeypointDetection1DTrainingDataset
+from align_toolbox.deep_learning.utils.loss import FocalTverskyLoss
 
 SEGMENTATION_KWARGS = dict(
     architecture="Unet", encoder="resnet18", pretrained_weights=None

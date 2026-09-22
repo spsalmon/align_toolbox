@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.plotting import proportions
+from align_toolbox.plotting import proportions
 
 COLUMNS = ("body_seg_volume_at_ecdysis", "body_seg_length_at_ecdysis")
 

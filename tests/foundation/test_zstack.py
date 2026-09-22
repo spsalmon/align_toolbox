@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter
 
-from towbintools.foundation import zstack
-from towbintools.foundation.utils import (
+from align_toolbox.foundation import zstack
+from align_toolbox.foundation.utils import (
     NotImplementedError as TowbinNotImplementedError,
 )
 

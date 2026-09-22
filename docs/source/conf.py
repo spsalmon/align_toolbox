@@ -17,14 +17,14 @@ sys.path.insert(0, os.path.abspath("../../"))
 
 # -- Project information -----------------------------------------------------
 
-project = "towbintools"
+project = "ALIGN"
 author = "Sacha Psalmon"
 try:
-    import urllib.request
     import json
+    import urllib.request
 
     with urllib.request.urlopen(
-        "https://pypi.org/pypi/towbintools/json", timeout=5
+        "https://pypi.org/pypi/align_toolbox/json", timeout=5
     ) as response:
         data = json.loads(response.read())
         release = data["info"]["version"]

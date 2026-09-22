@@ -1,5 +1,5 @@
 [project]
-name = "towbintools"
+name = "align_toolbox"
 version = "0.5.0"
 authors = [
   {name="Sacha Psalmon", email="sacha.psalmon@unibe.ch" },
@@ -8,7 +8,7 @@ authors = [
 maintainers = [
     {name = "Sacha Psalmon", email="sacha.psalmon@unibe.ch"},
 ]
-description = "All the tools used by the Towbin Lab !"
+description = "This package implements most of the functions used in the ALIGN pipeline, a modular image analysis workflow adapted for longitudinal, high-troughput microscopy. Developed by the Towbin Lab of the University of Bern."
 readme = "README.md"
 requires-python = ">=3.10"
 
@@ -47,6 +47,10 @@ dependencies = [
     "statannotations",
 ]
 
+[project.urls]
+    Repository = "https://github.com/spsalmon/align_toolbox"
+    Documentation = "https://align-toolbox.readthedocs.io"
+
 [project.optional-dependencies]
 dev=[
     "black",
@@ -71,7 +75,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["towbintools"]
+source = ["align_toolbox"]
 
 [tool.coverage.report]
 show_missing = true
@@ -79,3 +83,14 @@ skip_covered = true
 # the suite sits at 95%; the floor leaves room for a refactor without
 # silently letting coverage rot
 fail_under = 93
+
+[tool.black]
+# pin the target so black's AST safety check does not depend on the
+# interpreter that happens to run the hook
+target-version = ["py310"]
+
+[tool.isort]
+# keep isort's output identical to what black would produce, otherwise the
+# two hooks rewrite each other on every commit
+profile = "black"
+line_length = 88

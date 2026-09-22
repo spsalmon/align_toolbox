@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from tifffile import imwrite
 
-from towbintools.classification import compute_qc_features
-from towbintools.classification.qc_tools import get_all_skimage_regionprops
+from align_toolbox.classification import compute_qc_features
+from align_toolbox.classification.qc_tools import get_all_skimage_regionprops
 
 
 def test_get_all_skimage_regionprops_mask_only_drops_intensity_properties():

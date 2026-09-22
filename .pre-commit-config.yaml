@@ -1,34 +1,30 @@
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
     -   id: check-yaml
     -   id: debug-statements
     -   id: end-of-file-fixer
     -   id: trailing-whitespace
 -   repo: https://github.com/asottile/setup-cfg-fmt
-    rev: v2.5.0
+    rev: v3.2.0
     hooks:
     -   id: setup-cfg-fmt
--   repo: https://github.com/asottile/reorder-python-imports
-    rev: v3.14.0
+-   repo: https://github.com/PyCQA/isort
+    rev: 8.0.1
     hooks:
-    -   id: reorder-python-imports
-        args: [
-            --application-directories, '.:towbintools',
-            --py39-plus,
-        ]
+    -   id: isort
 -   repo: https://github.com/asottile/pyupgrade
-    rev: v3.19.1
+    rev: v3.21.2
     hooks:
     -   id: pyupgrade
-        args: [--py39-plus]
+        args: [--py310-plus]
 -   repo: https://github.com/psf/black
-    rev: 23.12.1
+    rev: 26.3.1
     hooks:
     -   id: black
 -   repo: https://github.com/PyCQA/flake8
-    rev: 7.0.0
+    rev: 7.3.0
     hooks:
     -   id: flake8
         args: [--max-line-length=88, --extend-ignore=E501 E203]

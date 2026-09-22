@@ -1,9 +1,11 @@
 import pytest
 import torch
 
-from towbintools.deep_learning.architectures.archs import DilatedBottleneck1D
-from towbintools.deep_learning.architectures.archs import Unet1D
-from towbintools.deep_learning.architectures.archs import VGGBlock1D
+from align_toolbox.deep_learning.architectures.archs import (
+    DilatedBottleneck1D,
+    Unet1D,
+    VGGBlock1D,
+)
 
 
 @pytest.fixture

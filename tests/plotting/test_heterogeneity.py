@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.plotting import heterogeneity
+from align_toolbox.plotting import heterogeneity
 
 
 def _line_data(fig):

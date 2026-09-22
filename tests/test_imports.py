@@ -2,23 +2,23 @@ import importlib
 
 import pytest
 
-import towbintools
+import align_toolbox
 
 
 def test_version_is_resolved_from_metadata():
-    assert towbintools.__version__ != "unknown"
+    assert align_toolbox.__version__ != "unknown"
 
 
 @pytest.mark.parametrize(
     "module_name",
     [
-        "towbintools.segmentation",
-        "towbintools.straightening",
-        "towbintools.quantification",
-        "towbintools.classification",
-        "towbintools.data_analysis",
-        "towbintools.deep_learning",
-        "towbintools.deep_learning.architectures",
+        "align_toolbox.segmentation",
+        "align_toolbox.straightening",
+        "align_toolbox.quantification",
+        "align_toolbox.classification",
+        "align_toolbox.data_analysis",
+        "align_toolbox.deep_learning",
+        "align_toolbox.deep_learning.architectures",
     ],
 )
 def test_every_name_in_dunder_all_is_importable(module_name):
