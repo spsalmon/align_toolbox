@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 
-from towbintools.quantification import compute_background_fluorescence
-from towbintools.quantification import compute_fluorescence_in_mask
+from align_toolbox.quantification import (
+    compute_background_fluorescence,
+    compute_fluorescence_in_mask,
+)
 
 
 @pytest.fixture

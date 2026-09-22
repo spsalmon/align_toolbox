@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.foundation import binary_image
+from align_toolbox.foundation import binary_image
 
 
 def test_find_endpoints_of_a_line_marks_its_two_tips():

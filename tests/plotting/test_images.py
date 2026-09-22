@@ -3,7 +3,7 @@ import polars as pl
 import pytest
 from tifffile import imwrite
 
-from towbintools.plotting import images
+from align_toolbox.plotting import images
 
 
 def test_filter_non_worm_data():

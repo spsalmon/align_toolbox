@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from skimage.measure import label
 
-from towbintools.foundation import worm_features
-from towbintools.straightening import Warper
+from align_toolbox.foundation import worm_features
+from align_toolbox.straightening import Warper
 
 PIXELSIZE = 0.5
 

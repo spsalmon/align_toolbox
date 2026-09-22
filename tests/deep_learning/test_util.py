@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from towbintools.deep_learning.utils import util
+from align_toolbox.deep_learning.utils import util
 
 
 def test_divide_batch_yields_chunks_covering_the_batch():

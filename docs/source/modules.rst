@@ -1,7 +1,7 @@
-towbintools
-===========
+ALIGN
+=====
 
 .. toctree::
    :maxdepth: 4
 
-   towbintools
+   align_toolbox

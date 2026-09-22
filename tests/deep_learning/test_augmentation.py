@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from tifffile import imwrite
 
-from towbintools.deep_learning.utils import augmentation as aug
+from align_toolbox.deep_learning.utils import augmentation as aug
 
 
 @pytest.fixture

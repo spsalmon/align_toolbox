@@ -2,10 +2,11 @@ import numpy as np
 import pytest
 from tifffile import imwrite
 
-from towbintools.segmentation import get_segmentation_function
-from towbintools.segmentation import segment_image
-from towbintools.segmentation.segmentation_tools import double_threshold_segmentation
-from towbintools.segmentation.segmentation_tools import threshold_segmentation
+from align_toolbox.segmentation import get_segmentation_function, segment_image
+from align_toolbox.segmentation.segmentation_tools import (
+    double_threshold_segmentation,
+    threshold_segmentation,
+)
 
 
 def _iou(a, b):
@@ -97,7 +98,7 @@ def test_get_segmentation_function_matches_segment_image(curved_worm_image, meth
 
 
 def test_edge_based_segmentation_rejects_3d_input(curved_worm_image):
-    from towbintools.segmentation import edge_based_segmentation
+    from align_toolbox.segmentation import edge_based_segmentation
 
     with pytest.raises(ValueError, match="2D"):
         edge_based_segmentation(np.stack([curved_worm_image] * 2), pixelsize=1.0)

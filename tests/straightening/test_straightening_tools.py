@@ -1,9 +1,11 @@
 import numpy as np
 import pytest
 
-from towbintools.straightening import Warper
-from towbintools.straightening.straightening_tools import extract_midline
-from towbintools.straightening.straightening_tools import validate_mask
+from align_toolbox.straightening import Warper
+from align_toolbox.straightening.straightening_tools import (
+    extract_midline,
+    validate_mask,
+)
 
 
 def test_validate_mask_accepts_single_object(curved_worm_mask):

@@ -1,16 +1,16 @@
-# towbintools!
+# ALIGN toolbox!
 
-This is the package containing all the important functions used by the Towbin Lab of the University of Bern.
+This package implements most of the functions used in the ALIGN pipeline, a modular image analysis workflow adapted for longitudinal, high-troughput microscopy. Developed by the Towbin Lab of the University of Bern.
 
-This package goes hand in hand with our modular pipelining tool : <https://github.com/spsalmon/towbintools_pipeline>
+This package goes hand in hand with our modular pipelining tool : <https://github.com/spsalmon/align_pipeline>
 
-Documentation : <https://towbintools.readthedocs.io/en/latest/index.html>
+Documentation : <https://align-toolbox.readthedocs.io/en/latest/index.html>
 ## Install the package using pip
 
 Simply run the following command:
 
 ```bash
-pip3 install towbintools
+pip3 install align_toolbox
 ```
 
 ## Build the package and install it
@@ -25,7 +25,7 @@ pip3 install towbintools
 2. Go to the package directory, eg:
 
    ```bash
-   cd ~/towbintools
+   cd ~/align_toolbox
 
    ```
 

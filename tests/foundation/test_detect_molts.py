@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.foundation import detect_molts
+from align_toolbox.foundation import detect_molts
 
 
 def test_interpolate_peaks_removes_single_frame_spikes():

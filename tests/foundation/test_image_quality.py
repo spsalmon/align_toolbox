@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter
 
-from towbintools.foundation import image_quality
+from align_toolbox.foundation import image_quality
 
 FOCUS_MEASURES = [
     image_quality.LAPV,

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from towbintools.data_analysis import growth_rate as gr
+from align_toolbox.data_analysis import growth_rate as gr
 
 TIME = np.arange(100.0)
 ALL_WORM = np.array(["worm"] * 100)

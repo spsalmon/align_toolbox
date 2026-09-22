@@ -3,7 +3,7 @@ import polars as pl
 import pytest
 import yaml
 
-from towbintools.plotting import plotting_structure as ps
+from align_toolbox.plotting import plotting_structure as ps
 
 N_FRAMES = 40
 FIRST_TIME = 100

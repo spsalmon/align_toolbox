@@ -1,11 +1,13 @@
 import numpy as np
 import pytest
 
-from towbintools.foundation.keypoint_detection import heatmap_to_keypoints_1D
-from towbintools.foundation.utils import find_best_string_match
-from towbintools.foundation.utils import interpolate_infs
-from towbintools.foundation.utils import interpolate_nans
-from towbintools.foundation.utils import interpolate_nans_infs
+from align_toolbox.foundation.keypoint_detection import heatmap_to_keypoints_1D
+from align_toolbox.foundation.utils import (
+    find_best_string_match,
+    interpolate_infs,
+    interpolate_nans,
+    interpolate_nans_infs,
+)
 
 
 def test_interpolate_nans_fills_gaps_linearly():
