@@ -65,7 +65,7 @@ class ClassificationModel(pl.LightningModule):
             self.f1_score = MulticlassF1Score(num_classes=n_classes)
 
         self.normalization = normalization
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["criterion"])
 
     def forward(self, x):
         y = self.model(x)
@@ -383,7 +383,7 @@ class KeypointDetection1DModel(pl.LightningModule):
         else:
             raise ValueError(f"Unsupported activation function: {activation}")
 
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["criterion"])
 
     def forward(self, x, mask=None):
         predicted_heatmap, predicted_presence = self.model(x, mask=mask)
