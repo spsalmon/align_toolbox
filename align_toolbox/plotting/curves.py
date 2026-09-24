@@ -271,17 +271,17 @@ def plot_growth_curves_individuals(
     if y_axis_label is not None:
         try:
             ax[0].set_ylabel(y_axis_label)
-            ax[0].set_xlabel("Time (h)")
+            ax[0].set_xlabel("time (h)")
         except TypeError:
             ax.set_ylabel(y_axis_label)
-            ax.set_xlabel("Time (h)")
+            ax.set_xlabel("time (h)")
     else:
         try:
             ax[0].set_ylabel(column)
-            ax[0].set_xlabel("Time (h)")
+            ax[0].set_xlabel("time (h)")
         except TypeError:
             ax.set_ylabel(column)
-            ax.set_xlabel("Time (h)")
+            ax.set_xlabel("time (h)")
     fig = plt.gcf()
     plt.show()
     return fig
