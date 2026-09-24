@@ -1,6 +1,6 @@
 [project]
 name = "align_toolbox"
-version = "0.5.2"
+version = "1.0.0"
 authors = [
   {name="Sacha Psalmon", email="sacha.psalmon@unibe.ch" },
   {name="Boris Gusev", email="boris.gusev@unibe.ch" }
