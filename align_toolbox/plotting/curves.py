@@ -166,13 +166,14 @@ def plot_growth_curves_individuals(
     conditions_struct: list,
     column: str,
     conditions_to_plot: list[int],
-    share_y_axis: bool,
+    share_y_axis: bool = True,
     log_scale: bool | tuple | list = True,
     figsize: tuple[float, float] | None = None,
     ax_size: tuple[float, float] | None = None,
     legend: dict | None = None,
     y_axis_label: str | None = None,
     cut_after: float | None = None,
+    alpha: float = 1.0,
 ) -> matplotlib.figure.Figure:
     """
     Plot smoothed individual-worm growth curves with one subplot per condition.
@@ -185,6 +186,7 @@ def plot_growth_curves_individuals(
         column (str) : Key of the raw measurement series.
         conditions_to_plot (list[int]) : Indices of conditions to include.
         share_y_axis (bool) : If ``True``, all subplots share the same y-axis range.
+            Defaults to ``True``.
         log_scale (bool or tuple or list) : Scale spec passed to ``set_scale``.
             Defaults to ``True`` (log y-axis only).
         figsize (tuple[float, float] or None) : Figure size ``(width, height)`` in inches.
@@ -198,6 +200,8 @@ def plot_growth_curves_individuals(
             Defaults to ``None``.
         cut_after (float or None) : Truncate worm traces at this experiment time
             (hours after hatch).  ``None`` keeps full traces.  Defaults to ``None``.
+        alpha (float) : Opacity of the individual curves, between 0 and 1.
+            Defaults to ``1.0``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -229,6 +233,7 @@ def plot_growth_curves_individuals(
             hatch_experiment_time = (
                 condition_dict["ecdysis_experiment_time"][j][0] / 3600
             )
+            individual_counts = 0
             if not np.isnan(hatch):
                 hatch = int(hatch)
                 if cut_after is not None:
@@ -249,11 +254,15 @@ def plot_growth_curves_individuals(
                 )
                 label = build_legend(condition_dict, legend)
                 try:
-                    ax[i].plot(time, filtered_data)
+                    ax[i].plot(time, filtered_data, alpha=alpha)
                     set_scale(ax[i], log_scale)
                 except TypeError:
-                    ax.plot(time, filtered_data)
+                    ax.plot(time, filtered_data, alpha=alpha)
                     set_scale(ax, log_scale)
+                    individual_counts += 1
+            print(
+                f"Individual counts for condition {condition_id}: {individual_counts}"
+            )
         try:
             ax[i].title.set_text(label)
         except TypeError:
