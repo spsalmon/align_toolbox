@@ -496,6 +496,7 @@ def _plot_violinplot(
             linewidth=2,
             legend="full",
             inner=inner,
+            linecolor="black",
         )
 
         plot_df = df.copy()
@@ -781,11 +782,14 @@ def _set_labels_and_legend(
     y_axis_label: str | None,
     legend: dict | None,
     legend_placement: str | None = "outside right",
+    legend_as_xticks: bool = False,
 ) -> None:
     """
     Set the y-axis label and place a shared figure legend.
 
-    Individual subplot legends are removed; a single legend is added to the figure.
+    Individual subplot legends are removed; a single legend is added to the figure,
+    or, with ``legend_as_xticks``, the legend labels are written as x tick labels
+    under each box or violin instead.
 
     Parameters:
         ax (np.ndarray or matplotlib.axes.Axes) : Axes array or scalar.
@@ -797,6 +801,9 @@ def _set_labels_and_legend(
         legend (dict or None) : Legend spec passed to ``build_legend``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
+        legend_as_xticks (bool) : If ``True``, label each box or violin with its legend
+            text on the x axis and draw no legend; ``legend_placement`` is ignored.
+            Defaults to ``False``.
 
     Returns:
         None
@@ -814,6 +821,14 @@ def _set_labels_and_legend(
         build_legend(conditions_struct[condition_id], legend)
         for condition_id in conditions_to_plot
     ]
+
+    if legend_as_xticks:
+        for axes in ax:
+            axes.set_xticks(range(len(legend_labels)), legend_labels)
+            axes.tick_params(axis="x", which="both", bottom=True, labelbottom=True)
+        add_legend(fig, None)
+        return
+
     legend_handles = ax[0].get_legend_handles_labels()[0]
 
     add_legend(fig, legend_placement, legend_handles, legend_labels)
@@ -840,6 +855,7 @@ def violinplot(
     hide_outliers: bool = True,
     return_data: bool = False,
     legend_placement: str | None = "outside right",
+    legend_as_xticks: bool = False,
 ) -> matplotlib.figure.Figure:
     """
     Create violin plots for a per-molt measurement across conditions.
@@ -884,6 +900,9 @@ def violinplot(
             Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
+        legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
+            box or violin with its legend text on the x axis; ``legend_placement``
+            is ignored.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -950,6 +969,7 @@ def violinplot(
         y_axis_label,
         legend,
         legend_placement,
+        legend_as_xticks,
     )
 
     if share_y_axis:
@@ -989,6 +1009,7 @@ def boxplot(
     hide_outliers: bool = True,
     return_data: bool = False,
     legend_placement: str | None = "outside right",
+    legend_as_xticks: bool = False,
 ) -> matplotlib.figure.Figure:
     """
     Create box plots for a per-molt measurement across conditions.
@@ -1035,6 +1056,9 @@ def boxplot(
             Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
+        legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
+            box or violin with its legend text on the x axis; ``legend_placement``
+            is ignored.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -1102,6 +1126,7 @@ def boxplot(
         y_axis_label,
         legend,
         legend_placement,
+        legend_as_xticks,
     )
 
     if share_y_axis:
@@ -1142,6 +1167,7 @@ def violinplot_larval_stage(
     show_swarm: bool = True,
     hide_outliers: bool = True,
     legend_placement: str | None = "outside right",
+    legend_as_xticks: bool = False,
 ) -> matplotlib.figure.Figure:
     """
     Create violin plots with per-worm values aggregated within a fraction of each larval stage.
@@ -1190,6 +1216,9 @@ def violinplot_larval_stage(
             Defaults to ``True``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
+        legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
+            box or violin with its legend text on the x axis; ``legend_placement``
+            is ignored.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -1269,6 +1298,7 @@ def violinplot_larval_stage(
         y_axis_label,
         legend,
         legend_placement,
+        legend_as_xticks,
     )
 
     if share_y_axis:
@@ -1302,6 +1332,7 @@ def boxplot_larval_stage(
     show_swarm: bool = True,
     hide_outliers: bool = True,
     legend_placement: str | None = "outside right",
+    legend_as_xticks: bool = False,
 ) -> matplotlib.figure.Figure:
     """
     Create box plots with per-worm values aggregated within a fraction of each larval stage.
@@ -1349,6 +1380,9 @@ def boxplot_larval_stage(
             Defaults to ``True``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
+        legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
+            box or violin with its legend text on the x axis; ``legend_placement``
+            is ignored.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -1428,6 +1462,7 @@ def boxplot_larval_stage(
         y_axis_label,
         legend,
         legend_placement,
+        legend_as_xticks,
     )
 
     if share_y_axis:

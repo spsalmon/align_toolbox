@@ -131,3 +131,37 @@ def test_larval_stage_plots_draw_four_panels(conditions_struct, plot_function):
     assert len(fig.axes) == 4
     assert "body_seg_volume_rescaled" in conditions_struct[0]
     assert not fig.legends
+
+
+@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+def test_event_plots_legend_as_xticks(conditions_struct, plot_function):
+    fig = plot_function(
+        conditions_struct,
+        "body_seg_volume_at_ecdysis",
+        [1, 0],
+        events_to_plot=[1, 2],
+        legend_as_xticks=True,
+    )
+    assert not fig.legends
+    for ax in fig.axes:
+        assert ax.get_legend() is None
+        assert list(ax.get_xticks()) == [0, 1]
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            "Condition 1",
+            "Condition 0",
+        ]
+
+
+@pytest.mark.parametrize(
+    "plot_function",
+    [boxplots.boxplot_larval_stage, boxplots.violinplot_larval_stage],
+)
+def test_larval_stage_plots_legend_as_xticks(conditions_struct, plot_function):
+    fig = plot_function(
+        conditions_struct, "body_seg_volume", [0, 1], n_points=10, legend_as_xticks=True
+    )
+    assert not fig.legends
+    assert [t.get_text() for t in fig.axes[0].get_xticklabels()] == [
+        "Condition 0",
+        "Condition 1",
+    ]

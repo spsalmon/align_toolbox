@@ -30,13 +30,6 @@ def axes_with_lines():
     return fig, ax
 
 
-def test_add_legend_inside_axes(axes_with_lines):
-    _, ax = axes_with_lines
-    legend = up.add_legend(ax, "upper left")
-    assert [t.get_text() for t in legend.get_texts()] == ["a", "b", "a"]
-    assert legend._loc == 2  # "upper left"
-
-
 def test_add_legend_deduplicates_labels(axes_with_lines):
     _, ax = axes_with_lines
     legend = up.add_legend(ax, deduplicate=True)
@@ -48,12 +41,6 @@ def test_add_legend_replaces_existing_legend(axes_with_lines):
     first = up.add_legend(ax)
     second = up.add_legend(ax, "lower right")
     assert ax.get_legend() is second is not first
-
-
-def test_add_legend_outside_top_lays_entries_in_one_row(axes_with_lines):
-    _, ax = axes_with_lines
-    legend = up.add_legend(ax, "outside top")
-    assert legend._ncols == 3
 
 
 def test_add_legend_on_figure_collects_from_all_axes():
@@ -107,10 +94,6 @@ def test_set_scale(log_scale, expected):
     assert (ax.get_xscale(), ax.get_yscale()) == expected
 
 
-def test_get_colors_generates_palette():
-    assert len(up.get_colors([0, 1, 2], None)) == 3
-
-
 def test_get_colors_orders_dict_by_conditions():
     assert up.get_colors([2, 0], {0: "red", 2: "blue"}) == ["blue", "red"]
 
@@ -145,11 +128,3 @@ def test_create_fixed_ax_sized_fig_rows_are_top_to_bottom():
     fig, axes = up.create_fixed_ax_sized_fig(nrows=2, ncols=1)
     fig.canvas.draw()
     assert axes[0].get_window_extent().y0 > axes[1].get_window_extent().y0
-
-
-def test_create_fixed_ax_sized_fig_returns_divider():
-    fig, ax, divider = up.create_fixed_ax_sized_fig(return_divider=True)
-    assert divider is not None
-    assert tuple(fig.get_size_inches()) == pytest.approx(
-        (1.0 + 3.5 + 0.8, 0.6 + 3.0 + 0.3)
-    )

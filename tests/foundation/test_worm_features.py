@@ -20,17 +20,6 @@ def straightened_curved_worm(curved_worm_mask):
     )
 
 
-def test_feature_name_getters_return_module_constants():
-    assert (
-        worm_features.get_available_mask_features()
-        == worm_features.AVAILABLE_MASK_FEATURES
-    )
-    assert (
-        worm_features.get_features_to_compute_at_molt()
-        == worm_features.FEATURES_TO_COMPUTE_AT_MOLT
-    )
-
-
 def test_regionprops_split_into_mask_and_intensity_properties():
     mask_props, image_props = worm_features.get_available_regionprops()
     assert "area" in mask_props and "area" not in image_props

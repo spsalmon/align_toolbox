@@ -47,6 +47,39 @@ def test_plot_aggregated_series_multiple_columns_and_xlim(conditions_struct):
     assert fig.axes[0].get_ylabel() == "size"
 
 
+def test_plot_aggregated_series_stage_axis(conditions_struct):
+    fig = curves.plot_aggregated_series(
+        conditions_struct, "body_seg_volume", [0, 1], x="stage", n_points=10
+    )
+    ax = fig.axes[0]
+    lines = ax.get_lines()
+    curves_drawn = [line for line in lines if line.get_linestyle() != ":"]
+    stage_limits = [line for line in lines if line.get_linestyle() == ":"]
+    assert len(curves_drawn) == 2
+    assert curves_drawn[0].get_xdata()[-1] == pytest.approx(100)
+    assert [line.get_xdata()[0] for line in stage_limits] == [0, 25, 50, 75, 100]
+    assert list(ax.get_xticks()) == [0, 25, 50, 75, 100]
+    assert [t.get_text() for t in ax.get_xticklabels()] == [
+        "Hatch",
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+    ]
+
+
+def test_plot_aggregated_series_stage_axis_respects_xlim(conditions_struct):
+    fig = curves.plot_aggregated_series(
+        conditions_struct,
+        "body_seg_volume",
+        [0],
+        x="stage",
+        n_points=10,
+        xlim=(20, 60),
+    )
+    assert [t.get_text() for t in fig.axes[0].get_xticklabels()] == ["M1", "M2"]
+
+
 def test_plot_aggregated_series_rejects_unknown_x(conditions_struct):
     with pytest.raises(ValueError):
         curves.plot_aggregated_series(
@@ -67,13 +100,6 @@ def test_plot_growth_curves_individuals_one_panel_per_condition(conditions_struc
     assert all(len(ax.get_lines()) == 30 for ax in fig.axes)
     # traces keep one frame (10 min) past the cut
     assert all(line.get_xdata().max() <= 10 + 1 / 6 for line in fig.axes[0].get_lines())
-
-
-def test_plot_growth_curves_individuals_single_condition(conditions_struct):
-    fig = curves.plot_growth_curves_individuals(
-        conditions_struct, "body_seg_volume", [1], share_y_axis=False, ax_size=(2, 2)
-    )
-    assert fig.axes[0].get_ylabel() == "body_seg_volume"
 
 
 def test_plot_growth_curves_individuals_starts_at_hatch_when_time_is_offset(

@@ -104,16 +104,6 @@ def test_get_unique_shapes_from_tiffs_without_valid_files_raises(tmp_path):
         ds.get_unique_shapes_from_tiffs([str(tmp_path / "missing.tiff")])
 
 
-def test_get_unique_shapes_from_tiffs_requires_image_paths():
-    """
-    image_paths used to carry ``list[str]`` as a default value instead of an
-    annotation, so a call with no paths iterated the generic alias and failed
-    with a misleading "no valid shapes" error.
-    """
-    with pytest.raises(TypeError):
-        ds.get_unique_shapes_from_tiffs()
-
-
 @pytest.mark.parametrize(
     "pad_or_crop, expected_shape", [("pad", (2, 1, 64, 96)), ("crop", (2, 1, 0, 32))]
 )

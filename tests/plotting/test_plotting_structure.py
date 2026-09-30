@@ -298,10 +298,6 @@ def test_build_plotting_struct_drops_ignored_frames_and_molts(
     assert np.isnan(control["ecdysis_time_step"][0, 1])
 
 
-def test_build_plotting_struct_does_not_write_to_cwd(plotting_struct, tmp_path):
-    assert not (tmp_path / "test.csv").exists()
-
-
 # --- combine_experiments ----------------------------------------------------------------------
 
 

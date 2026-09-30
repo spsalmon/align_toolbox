@@ -14,6 +14,8 @@ from .utils_plotting import (
     set_scale,
 )
 
+STAGE_LIMIT_LABELS = ["Hatch", "M1", "M2", "M3", "M4"]
+
 
 def plot_aggregated_series(
     conditions_struct: list,
@@ -45,7 +47,9 @@ def plot_aggregated_series(
         series_column (str or list[str]) : Key(s) of the measurement series to plot.
         conditions_to_plot (list[int]) : Indices of conditions to include.
         x (str) : X-axis variable.  ``"time"`` uses rescaled hours;
-            ``"percentage"`` uses development completion (0–100 %).
+            ``"percentage"`` uses development completion (0–100 %);
+            ``"stage"`` plots the same development completion axis with ticks
+            at hatch and each molt, and dotted lines at the stage limits.
             Defaults to ``"time"``.
         experiment_time (bool) : If ``True``, use absolute experiment time (hours);
             otherwise use time-step index scaled by ``time_step``.
@@ -77,7 +81,7 @@ def plot_aggregated_series(
         matplotlib.figure.Figure : The generated figure.
 
     Raises:
-        ValueError : If ``x`` is not ``"time"`` or ``"percentage"``.
+        ValueError : If ``x`` is not ``"time"``, ``"percentage"`` or ``"stage"``.
     """
     if ax_size is not None:
         create_fixed_ax_sized_fig(
@@ -122,11 +126,11 @@ def plot_aggregated_series(
 
             if x == "time":
                 x_values = rescaled_time
-            elif x == "percentage":
+            elif x in ("percentage", "stage"):
                 x_values = np.linspace(0, 100, len(rescaled_time))
             else:
                 raise ValueError(
-                    f"Invalid x value: {x}. Must be 'time' or 'percentage'."
+                    f"Invalid x value: {x}. Must be 'time', 'percentage' or 'stage'."
                 )
 
             if xlim is not None:
@@ -146,6 +150,16 @@ def plot_aggregated_series(
             plot_single_series(column)
     else:
         plot_single_series(series_column)
+    if x == "stage":
+        stage_limits = np.linspace(0, 100, len(STAGE_LIMIT_LABELS))
+        shown = [
+            (limit, label)
+            for limit, label in zip(stage_limits, STAGE_LIMIT_LABELS)
+            if xlim is None or xlim[0] <= limit <= xlim[1]
+        ]
+        for limit, _ in shown:
+            plt.axvline(limit, color="gray", linestyle=":", zorder=0, alpha=0.5)
+        plt.xticks([limit for limit, _ in shown], [label for _, label in shown])
     add_legend(placement=legend_placement, deduplicate=True)
     plt.yscale("log" if log_scale else "linear")
     if y_axis_label is not None:
@@ -155,7 +169,12 @@ def plot_aggregated_series(
     if x_axis_label is not None:
         plt.xlabel(x_axis_label)
     else:
-        plt.xlabel("time (h)" if x == "time" else "development completion (%)")
+        default_x_labels = {
+            "time": "time (h)",
+            "percentage": "development completion (%)",
+            "stage": "",
+        }
+        plt.xlabel(default_x_labels[x])
 
     fig = plt.gcf()
     plt.show()
@@ -225,6 +244,7 @@ def plot_growth_curves_individuals(
         else:
             qc_key = find_best_string_match(column, qc_keys)
 
+        individual_counts = 0
         for j in range(len(condition_dict[column])):
             time = condition_dict["experiment_time"][j] / 3600
             data = condition_dict[column][j]
@@ -233,7 +253,7 @@ def plot_growth_curves_individuals(
             hatch_experiment_time = (
                 condition_dict["ecdysis_experiment_time"][j][0] / 3600
             )
-            individual_counts = 0
+
             if not np.isnan(hatch):
                 hatch = int(hatch)
                 if cut_after is not None:
@@ -260,9 +280,7 @@ def plot_growth_curves_individuals(
                     ax.plot(time, filtered_data, alpha=alpha)
                     set_scale(ax, log_scale)
                     individual_counts += 1
-            print(
-                f"Individual counts for condition {condition_id}: {individual_counts}"
-            )
+        print(f"Individual counts for condition {condition_id}: {individual_counts}")
         try:
             ax[i].title.set_text(label)
         except TypeError:

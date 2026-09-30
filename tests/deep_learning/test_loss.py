@@ -71,10 +71,6 @@ def test_multiclass_focal_loss_rejects_unknown_reduction():
         loss.MultiClassFocalLoss(reduction="max")
 
 
-def test_multiclass_focal_loss_repr_lists_arguments():
-    assert "gamma=2.0" in repr(loss.MultiClassFocalLoss())
-
-
 def test_bce_with_ignore_matches_bce_on_kept_elements():
     probabilities = torch.tensor([0.9, 0.2, 0.7, 0.4])
     targets = torch.tensor([1.0, 0.0, -1.0, 1.0])

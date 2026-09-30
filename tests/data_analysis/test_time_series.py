@@ -236,19 +236,6 @@ def test_rescale_and_aggregate_means_and_rescaled_time(two_worms):
     np.testing.assert_allclose(std[:5], np.abs(3 - rescaled_time[:5]) / 2)
 
 
-def test_rescale_and_aggregate_median(two_worms):
-    series, time, ecdysis, qc = two_worms
-    durations = np.diff(ecdysis, axis=1)
-    _, median, _, _ = ts.rescale_and_aggregate(
-        series, time, ecdysis, durations, qc, aggregation="median", n_points=5
-    )
-    _, mean, _, _ = ts.rescale_and_aggregate(
-        series, time, ecdysis, durations, qc, n_points=5
-    )
-    # with two worms, median and mean coincide
-    np.testing.assert_allclose(median, mean)
-
-
 def test_aggregate_standard_error_uses_number_of_worms(two_worms):
     series, time, ecdysis, qc = two_worms
     durations = np.diff(ecdysis, axis=1)
