@@ -10,6 +10,8 @@ import pandas as pd
 import seaborn as sns
 from scipy import stats
 from statannotations.Annotator import Annotator
+from statannotations.format_annotations import pval_annotation_text, simple_text
+from statannotations.stats.StatResult import StatResult
 from statannotations.stats.StatTest import STATTEST_LIBRARY, StatTest
 
 from .utils_data_processing import rescale_without_flattening
@@ -243,6 +245,32 @@ def _get_stat_test(test: str) -> StatTest:
     return stat_test
 
 
+STAR_THRESHOLDS = [[1e-4, "****"], [1e-3, "***"], [1e-2, "**"], [0.05, "*"], [1, "ns"]]
+SIMPLE_THRESHOLDS = [[1e-5, "1e-5"], [1e-4, "1e-4"], [1e-3, "0.001"], [1e-2, "0.01"]]
+
+
+def _format_test_result(test: str, result: StatResult) -> str:
+    """
+    Format one test result as a line of bracket text, prefixed with the test name.
+
+    Mann-Whitney results are written as stars, all other tests as a p-value.
+
+    Parameters:
+        test (str): Test name, as passed to ``_get_stat_test``.
+        result (StatResult): Result of the test on one pair.
+
+    Returns:
+        str: The annotation line, e.g. ``"Mann-Whitney ***"`` or
+        ``"Levene p = 0.03"``.
+    """
+    if test == "Mann-Whitney":
+        text = pval_annotation_text([result], STAR_THRESHOLDS)[0][0]
+    else:
+        text = simple_text(result, "{:.2f}", SIMPLE_THRESHOLDS, short_test_name=False)
+    name = test if test[0].isupper() else test.capitalize()
+    return f"{name} {text}"
+
+
 def _annotate_significance(
     df: pd.DataFrame,
     conditions_to_plot: list,
@@ -251,7 +279,7 @@ def _annotate_significance(
     significance_pairs: list[tuple] | None,
     event_index: int,
     plot_type: str = "boxplot",
-    test: str = "Mann-Whitney",
+    test: str | list[str] = "Mann-Whitney",
     verbose: bool = True,
     shown_df: pd.DataFrame | None = None,
 ) -> None:
@@ -260,6 +288,8 @@ def _annotate_significance(
 
     The tests run on ``df``; the brackets are placed from ``shown_df``, so the
     plot can display transformed values while the tests use the original ones.
+    With several tests, each bracket carries one line per test, stacked in the
+    order given.  Every line is prefixed with the name of its test.
 
     Parameters:
         df (pandas.DataFrame) : Full data DataFrame with ``"Order"`` and
@@ -271,9 +301,9 @@ def _annotate_significance(
             all pairwise combinations are used when ``None``.
         event_index (int) : The ``"Order"`` value identifying the current subplot.
         plot_type (str) : ``"boxplot"`` or ``"violinplot"``.  Defaults to ``"boxplot"``.
-        test (str) : Statistical test name.  Statannotations built-in tests are
-            supported as well as ``"Feltz-Miller"`` and ``"MSLR"``.
-            Defaults to ``"Mann-Whitney"``.
+        test (str or list[str]) : Statistical test name, or several names to share
+            each bracket.  Statannotations built-in tests are supported as well as
+            ``"Feltz-Miller"`` and ``"MSLR"``.  Defaults to ``"Mann-Whitney"``.
         verbose (bool) : If ``True``, print sample sizes and test details.
             Defaults to ``True``.
         shown_df (pandas.DataFrame or None) : The values drawn on the axes, with the
@@ -281,15 +311,14 @@ def _annotate_significance(
             Defaults to ``None``.
 
     Raises:
-        ValueError : If ``test`` is not supported.
+        ValueError : If a test is not supported.
 
     Returns:
         None
     """
-    # Filter data for the current event
+    tests = [test] if isinstance(test, str) else list(test)
     df_filtered = df[df["Order"] == event_index]
 
-    # Print non-NaN counts for each condition
     print(f"\nSample sizes (non-NaN) for event index {event_index}, column '{column}':")
     if verbose:
         for condition in conditions_to_plot:
@@ -297,43 +326,77 @@ def _annotate_significance(
             n = condition_data.notna().sum()
             print(f"Condition {condition}: n={n}")
 
-    # Original code continues...
     if significance_pairs is None:
         pairs = list(combinations(df["Condition"].unique(), 2))
     else:
         pairs = significance_pairs
-    stat_test = _get_stat_test(test)
-    p_values = [
-        stat_test(
-            df_filtered.loc[df_filtered["Condition"] == first, column].dropna(),
-            df_filtered.loc[df_filtered["Condition"] == second, column].dropna(),
-        ).pvalue
-        for first, second in pairs
-    ]
+    stat_tests = [_get_stat_test(name) for name in tests]
+    texts = []
+    for first, second in pairs:
+        first_values = df_filtered.loc[df_filtered["Condition"] == first, column]
+        second_values = df_filtered.loc[df_filtered["Condition"] == second, column]
+        lines = []
+        for name, stat_test in zip(tests, stat_tests):
+            result = stat_test(first_values.dropna(), second_values.dropna())
+            if verbose:
+                print(f"{first} vs. {second}: {result.formatted_output}")
+            lines.append(_format_test_result(name, result))
+        texts.append("\n".join(lines))
 
     if shown_df is None:
         shown_df = df
-    annotator = Annotator(
-        ax=boxplot,
-        pairs=pairs,
-        data=shown_df[shown_df["Order"] == event_index],
-        x="Condition",
-        order=conditions_to_plot,
-        y=column,
-        plot=plot_type,
-    )
-    if test == "Mann-Whitney":
-        annotator.configure(text_format="star", loc="inside", verbose=verbose)
-    else:
-        annotator.configure(
-            text_format="simple",
-            loc="inside",
-            verbose=verbose,
-            test_short_name=(
-                test.capitalize() if test in STATANNOTATIONS_TESTS else test
-            ),
+    shown_values = shown_df.loc[shown_df["Order"] == event_index]
+
+    def draw_brackets() -> None:
+        annotator = Annotator(
+            ax=boxplot,
+            pairs=pairs,
+            data=shown_values,
+            x="Condition",
+            order=conditions_to_plot,
+            y=column,
+            plot=plot_type,
         )
-    annotator.set_pvalues_and_annotate(p_values)
+        annotator.configure(loc="inside", verbose=False)
+        annotator.set_custom_annotations(texts)
+        annotator.annotate()
+
+    # statannotations stacks brackets in axes fractions, then raises the y limit to
+    # fit them, which squeezes the text it measured into overlap. The text and
+    # bracket heights are fixed in axes fractions while the data shrinks as the
+    # limit rises, so the first pass tells us the limit at which everything fits.
+    n_lines, n_texts = len(boxplot.lines), len(boxplot.texts)
+    bottom, top = boxplot.get_ylim()
+    draw_brackets()
+    stack_top = _axis_fraction(boxplot, bottom, boxplot.get_ylim()[1]) / 1.04
+    for artist in boxplot.lines[n_lines:] + boxplot.texts[n_texts:]:
+        artist.remove()
+    boxplot.set_ylim(bottom, top)
+
+    data_top = _axis_fraction(boxplot, bottom, np.nanmax(shown_values[column]))
+    annotations_height = stack_top - data_top
+    # past 90 % of the axis the brackets cannot fit; leave the first-pass limit
+    axis_top = data_top / max(1 / 1.04 - annotations_height, 0.1)
+    to_axes = boxplot.transScale + boxplot.transLimits
+    new_top = to_axes.inverted().transform((0, axis_top))[1]
+    boxplot.set_ylim(bottom, max(new_top, top))
+    draw_brackets()
+
+
+def _axis_fraction(ax: matplotlib.axes.Axes, low: float, high: float) -> float:
+    """
+    Measure the distance between two y values as a fraction of the axis height.
+
+    Parameters:
+        ax (matplotlib.axes.Axes): Axes whose current y limits and scale are used.
+        low (float): Lower y value, in data coordinates.
+        high (float): Upper y value, in data coordinates.
+
+    Returns:
+        float: ``(high - low)`` in axes-fraction units.
+    """
+    to_axes = ax.transScale + ax.transLimits
+    return to_axes.transform((0, high))[1] - to_axes.transform((0, low))[1]
 
 
 def _add_metric_text(
@@ -343,7 +406,7 @@ def _add_metric_text(
     ax: matplotlib.axes.Axes,
     event_index: int,
     log_scale: bool,
-    test: str = "Mann-Whitney",
+    test: str | list[str] = "Mann-Whitney",
     y_offset_pct: float = 0.1,
     significant_digits: int = 3,
     display_transform: Callable | None = None,
@@ -353,6 +416,8 @@ def _add_metric_text(
 
     The statistic displayed depends on the test: median (Mann-Whitney, Kruskal-Wallis,
     Wilcoxon), mean (t-test, Welch), std (Levene), or CV % (Feltz-Miller, MSLR).
+    With several tests, the statistic of each is stacked in one box, in test order
+    and without repeats.
 
     Parameters:
         df (pandas.DataFrame) : Full data DataFrame with ``"Order"`` and
@@ -362,8 +427,8 @@ def _add_metric_text(
         ax (matplotlib.axes.Axes) : Axes object of the target subplot.
         event_index (int) : The ``"Order"`` value identifying the current subplot.
         log_scale (bool) : If ``True``, adjust y-position calculation for log-scale axes.
-        test (str) : Statistical test name; determines which statistic to display.
-            Defaults to ``"Mann-Whitney"``.
+        test (str or list[str]) : Statistical test name(s); determines which
+            statistics to display.  Defaults to ``"Mann-Whitney"``.
         y_offset_pct (float) : Downward offset of the text box as a fraction of the
             y-axis range.  Defaults to ``0.1``.
         significant_digits (int) : Number of significant digits in the displayed value.
@@ -377,7 +442,7 @@ def _add_metric_text(
         None
 
     Raises:
-        ValueError : If ``test`` is not in the supported list.
+        ValueError : If a test is not in the supported list.
     """
     test_metrics = {
         "Mann-Whitney": ("median", "M"),
@@ -390,12 +455,14 @@ def _add_metric_text(
         "MSLR": ("cv", "CV"),
     }
 
-    if test not in test_metrics:
-        raise ValueError(
-            f"Test '{test}' not supported. Available tests: {list(test_metrics.keys())}"
-        )
-
-    metric_type, symbol = test_metrics[test]
+    tests = [test] if isinstance(test, str) else list(test)
+    for name in tests:
+        if name not in test_metrics:
+            raise ValueError(
+                f"Test '{name}' not supported. "
+                f"Available tests: {list(test_metrics.keys())}"
+            )
+    metrics = list(dict.fromkeys(test_metrics[name] for name in tests))
 
     data = df[df["Order"] == event_index]
 
@@ -416,22 +483,28 @@ def _add_metric_text(
         if len(condition_data) == 0 or condition_data.isna().all():
             continue
 
-        if metric_type == "mean":
-            metric_value = condition_data.mean()
-        elif metric_type == "median":
-            metric_value = condition_data.median()
-        elif metric_type == "std":
-            metric_value = condition_data.std()
-        elif metric_type == "cv":
-            metric_value = condition_data.std() / condition_data.mean() * 100
-        if np.isnan(metric_value):
-            continue
-        if display_transform is not None and metric_type in ("mean", "median"):
-            metric_value = display_transform(metric_value)
+        lines = []
+        for metric_type, symbol in metrics:
+            if metric_type == "mean":
+                metric_value = condition_data.mean()
+            elif metric_type == "median":
+                metric_value = condition_data.median()
+            elif metric_type == "std":
+                metric_value = condition_data.std()
+            elif metric_type == "cv":
+                metric_value = condition_data.std() / condition_data.mean() * 100
+            if np.isnan(metric_value):
+                continue
+            if display_transform is not None and metric_type in ("mean", "median"):
+                metric_value = display_transform(metric_value)
 
-        text = f"{symbol} = {metric_value:.{significant_digits}g}"
-        if metric_type == "cv":
-            text += " %"
+            line = f"{symbol} = {metric_value:.{significant_digits}g}"
+            if metric_type == "cv":
+                line += " %"
+            lines.append(line)
+        if not lines:
+            continue
+        text = "\n".join(lines)
 
         ax.text(
             i,
@@ -449,10 +522,12 @@ def _add_metric_text(
             ),
         )
 
+    # each extra stacked line needs roughly another 6 % of the axis below the plot
+    bottom_pct = y_offset_pct + 0.04 + 0.06 * (len(metrics) - 1)
     if log_scale:
-        ax.set_ylim(10 ** (log_y_min - log_range * (y_offset_pct + 0.04)), y_max)
+        ax.set_ylim(10 ** (log_y_min - log_range * bottom_pct), y_max)
     else:
-        ax.set_ylim(y_position - (y_range * 0.04), y_max)
+        ax.set_ylim(y_min - y_range * bottom_pct, y_max)
 
 
 def _plot_violinplot(
@@ -467,7 +542,7 @@ def _plot_violinplot(
     significance_pairs: list[tuple] | None,
     log_scale: bool,
     show_metric: bool = False,
-    test: str = "Mann-Whitney",
+    test: str | list[str] = "Mann-Whitney",
     show_swarm: bool = True,
     hide_outliers: bool = False,
     inner: str | None = "box",
@@ -491,8 +566,8 @@ def _plot_violinplot(
         log_scale (bool) : Passed to ``_add_metric_text`` for back-transformation.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
             Defaults to ``False``.
-        test (str) : Statistical test for significance annotation.
-            Defaults to ``"Mann-Whitney"``.
+        test (str or list[str]) : Statistical test for significance annotation, or
+            several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the violin plot.
             Defaults to ``True``.
         hide_outliers (bool) : If ``True``, remove data points beyond ±3 std in the
@@ -579,18 +654,7 @@ def _plot_violinplot(
         )
 
         if plot_significance:
-            _annotate_significance(
-                df,
-                conditions_to_plot,
-                column,
-                violinplot,
-                significance_pairs,
-                event_index,
-                plot_type="violinplot",
-                test=test,
-                shown_df=shown_df,
-            )
-
+            # metrics first: they lower the y limit, which would squeeze brackets
             if show_metric:
                 _add_metric_text(
                     df,
@@ -602,6 +666,17 @@ def _plot_violinplot(
                     test=test,
                     display_transform=display_transform,
                 )
+            _annotate_significance(
+                df,
+                conditions_to_plot,
+                column,
+                violinplot,
+                significance_pairs,
+                event_index,
+                plot_type="violinplot",
+                test=test,
+                shown_df=shown_df,
+            )
 
         min_y, max_y = current_ax.get_ylim()
         y_min.append(min_y)
@@ -624,7 +699,7 @@ def _plot_boxplot(
     show_metric: bool = False,
     show_swarm: bool = True,
     hide_outliers: bool = False,
-    test: str = "Mann-Whitney",
+    test: str | list[str] = "Mann-Whitney",
     return_data: bool = False,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[list[float], list[float]]:
@@ -650,8 +725,8 @@ def _plot_boxplot(
             Defaults to ``True``.
         hide_outliers (bool) : If ``True``, remove data points beyond ±3 std in the
             swarm plot.  Defaults to ``False``.
-        test (str) : Statistical test for significance annotation.
-            Defaults to ``"Mann-Whitney"``.
+        test (str or list[str]) : Statistical test for significance annotation, or
+            several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
         return_data (bool) : Unused; reserved for future use.  Defaults to ``False``.
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier detection and metrics use the original
@@ -736,17 +811,7 @@ def _plot_boxplot(
         )
 
         if plot_significance:
-            _annotate_significance(
-                df,
-                conditions_to_plot,
-                column,
-                boxplot,
-                significance_pairs,
-                event_index,
-                test=test,
-                shown_df=shown_df,
-            )
-
+            # metrics first: they lower the y limit, which would squeeze brackets
             if show_metric:
                 _add_metric_text(
                     df,
@@ -758,6 +823,16 @@ def _plot_boxplot(
                     test=test,
                     display_transform=display_transform,
                 )
+            _annotate_significance(
+                df,
+                conditions_to_plot,
+                column,
+                boxplot,
+                significance_pairs,
+                event_index,
+                test=test,
+                shown_df=shown_df,
+            )
 
         min_y, max_y = current_ax.get_ylim()
         y_min.append(min_y)
@@ -883,7 +958,7 @@ def violinplot(
     plot_significance: bool = False,
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
-    significance_test: str = "Mann-Whitney",
+    significance_test: str | list[str] = "Mann-Whitney",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -921,7 +996,9 @@ def violinplot(
             Defaults to ``False``.
         significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
             Defaults to ``None``.
-        significance_test (str) : Statistical test for annotation.
+        significance_test (str or list[str]) : Statistical test for annotation.  With
+            a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
+            per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
@@ -1046,7 +1123,7 @@ def boxplot(
     plot_significance: bool = False,
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
-    significance_test: str = "Mann-Whitney",
+    significance_test: str | list[str] = "Mann-Whitney",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1086,7 +1163,9 @@ def boxplot(
             Defaults to ``False``.
         significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
             Defaults to ``None``.
-        significance_test (str) : Statistical test for annotation.
+        significance_test (str or list[str]) : Statistical test for annotation.  With
+            a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
+            per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
@@ -1213,7 +1292,7 @@ def violinplot_larval_stage(
     colors: list | dict | None = None,
     plot_significance: bool = False,
     significance_pairs: list[tuple] | None = None,
-    significance_test: str = "Mann-Whitney",
+    significance_test: str | list[str] = "Mann-Whitney",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1254,7 +1333,9 @@ def violinplot_larval_stage(
             Defaults to ``False``.
         significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
             Defaults to ``None``.
-        significance_test (str) : Statistical test for annotation.
+        significance_test (str or list[str]) : Statistical test for annotation.  With
+            a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
+            per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
@@ -1378,7 +1459,7 @@ def boxplot_larval_stage(
     colors: list | dict | None = None,
     plot_significance: bool = False,
     significance_pairs: list[tuple] | None = None,
-    significance_test: str = "Mann-Whitney",
+    significance_test: str | list[str] = "Mann-Whitney",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1418,7 +1499,9 @@ def boxplot_larval_stage(
             Defaults to ``False``.
         significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
             Defaults to ``None``.
-        significance_test (str) : Statistical test for annotation.
+        significance_test (str or list[str]) : Statistical test for annotation.  With
+            a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
+            per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.

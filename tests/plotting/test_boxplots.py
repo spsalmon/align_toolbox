@@ -214,3 +214,37 @@ def test_display_transform_changes_drawn_values_not_tests(
     assert fig.axes[0].texts[0].xy[1] > np.concatenate(percent_values).max()
     shown_p_value = float(text.split("=")[1])
     assert shown_p_value == pytest.approx(stats.levene(*log_values).pvalue, abs=0.01)
+
+
+@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+def test_several_tests_share_one_bracket(conditions_struct, plot_function):
+    # same center, five times the spread: only Levene sees a difference
+    rng = np.random.default_rng(0)
+    for spread, condition in zip([0.1, 0.5], conditions_struct):
+        condition["value"] = 1.0 + spread * rng.standard_normal((30, 1))
+    values = [c["value"][:, 0] for c in conditions_struct]
+    assert stats.mannwhitneyu(*values).pvalue > 0.05
+    assert stats.levene(*values).pvalue < 1e-5
+
+    fig = plot_function(
+        conditions_struct,
+        "value",
+        [0, 1],
+        log_scale=False,
+        plot_significance=True,
+        significance_test=["Mann-Whitney", "Levene"],
+        show_metric=True,
+        hide_outliers=False,
+    )
+
+    texts = [t.get_text() for t in fig.axes[0].texts]
+    assert "Mann-Whitney ns\nLevene p ≤ 1e-5" in texts
+    metric_texts = [text for text in texts if text.startswith("M = ")]
+    for value, expected in zip(values, metric_texts, strict=True):
+        median_line, std_line = expected.split("\n")
+        assert float(median_line.split("=")[1]) == pytest.approx(
+            np.median(value), rel=5e-3
+        )
+        assert float(std_line.split("=")[1]) == pytest.approx(
+            np.std(value, ddof=1), rel=5e-3
+        )
