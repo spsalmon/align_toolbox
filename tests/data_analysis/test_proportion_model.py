@@ -1,18 +1,24 @@
 import numpy as np
 import pandas as pd
+import pymc as pm
 import pytest
 import statsmodels.formula.api as smf
+from scipy.stats import expon
 from xarray import Dataset, DataTree
 
 from align_toolbox.data_analysis import proportion_model as pmod
 from tests.data_analysis.proportion_simulation import (
+    ALLOMETRY_CELLS,
+    ALLOMETRY_LOW_GAP_CELLS,
     CELLS,
     EXPERIMENTS,
     X0,
+    simulate_allometry,
     simulate_proportions,
 )
 
 COLUMNS = ("volume_at_ecdysis", "pharynx_volume_at_ecdysis")
+ALLOMETRY_COLUMNS = ("length_at_ecdysis", "volume_at_ecdysis")
 FACTORS_2X2 = {
     0: {"yap1": "WT", "tir": "none"},
     1: {"yap1": "abt7", "tir": "none"},
@@ -144,7 +150,15 @@ def test_missing_reference_cell_raises():
 # RESULT METHODS ON A HAND-BUILT POSTERIOR
 
 
-def _result(table, coding, posterior, x_ref, group_variances=False):
+def _result(
+    table,
+    coding,
+    posterior,
+    x_ref,
+    group_variances=False,
+    likelihood="normal",
+    spline_basis=None,
+):
     """Wrap fixed posterior draws, given as ``{name: (dims, values)}``, in a result."""
     n_draws = len(posterior["a"][1])
     data = {
@@ -160,6 +174,8 @@ def _result(table, coding, posterior, x_ref, group_variances=False):
         "worm": sorted(table["worm_id"].unique(), reverse=True),
         "cell": coding.cells,
     }
+    if spline_basis is not None:
+        coords["spline_basis"] = np.arange(spline_basis.penalty_map.shape[1])
     idata = DataTree.from_dict({"posterior": Dataset(data, coords=coords)})
     return pmod.ProportionModelResult(
         idata=idata,
@@ -169,9 +185,11 @@ def _result(table, coding, posterior, x_ref, group_variances=False):
         experiment_labels={},
         counts=None,
         diagnostics={},
-        likelihood="normal",
+        likelihood=likelihood,
         group_variances=group_variances,
         random_seed=0,
+        reference_shape_used="linear" if spline_basis is None else "spline",
+        spline_basis=spline_basis,
     )
 
 
@@ -248,14 +266,11 @@ def test_reference_residuals_by_molt_recover_curvature():
     table = _reference_table(
         {1: [1.0, 1.1], 2: [2.0, 2.1], 3: [3.0, 3.1]}, bump_by_molt=bumps
     )
-    # a, b and the worm/experiment effects reproduce the line exactly
+    # a, b and the experiment effects reproduce the line exactly; the worm
+    # effects of the posterior are left out of the marginal residuals
     experiment_effect = [0.03, -0.03]
     worm_effect = {"w0": 0.02, "w1": -0.01}
-    table["log_y"] += (
-        table["experiment"].map({"E1": 0.03, "E2": -0.03})
-        + table["worm_id"].map(worm_effect)
-        - 0.5 * 2.0
-    )
+    table["log_y"] += table["experiment"].map({"E1": 0.03, "E2": -0.03}) - 0.5 * 2.0
     worms = sorted(worm_effect, reverse=True)
     result = _result(
         table,
@@ -274,6 +289,68 @@ def test_reference_residuals_by_molt_recover_curvature():
     effects = result.worm_effects().set_index("worm_id")
     assert effects.loc["w0", "mean"] == pytest.approx(0.02)
     assert effects.loc["w1", "mean"] == pytest.approx(-0.01)
+
+
+def test_reference_residuals_do_not_depend_on_worm_effects():
+    coding = pmod.build_genotype_coding([0], reference_condition=0)
+    # molt 2 has only worm w0, so its intercept could absorb the molt-2 misfit
+    table = _reference_table({1: [1.0, 1.1], 2: [2.0]}, bump_by_molt={2: 0.04})
+    worm_effect = np.array([[0.01, 0.04], [-0.02, 0.03]])
+    posterior = {
+        "a": ((), [1.0, 1.1]),
+        "b": ((), [0.5, 0.5]),
+        "worm_effect": (("worm",), worm_effect),
+    }
+    before = _result(table, coding, posterior, x_ref=0.0)
+    shifted = dict(posterior, worm_effect=(("worm",), worm_effect + 0.5))
+    after = _result(table, coding, shifted, x_ref=0.0)
+    pd.testing.assert_frame_equal(
+        before.reference_residuals_by_molt(), after.reference_residuals_by_molt()
+    )
+    # a = 1.05 on average, so the residuals are -0.05 and -0.05 + 0.04
+    np.testing.assert_allclose(
+        before.reference_residuals_by_molt()["mean_percent"],
+        [100 * np.expm1(-0.05), 100 * np.expm1(-0.01)],
+    )
+
+
+def test_residuals_use_each_genotype_curve_without_worm_effects():
+    coding = pmod.build_genotype_coding([0, 1], reference_condition=0)
+    worm_offset = {"w0": 0.02, "w1": -0.01, "m0": 0.03, "m1": -0.04}
+    reference = _reference_table({1: [1.0, 1.1], 2: [2.0, 2.1]})
+    mutant = reference.assign(
+        condition_id=1, worm_id=reference["worm_id"].str.replace("w", "m")
+    )
+    # mutant curve: beta = 0.1 and gamma = 0.2 around x_ref = 1.5
+    mutant["log_y"] += 0.1 + 0.2 * (mutant["log_x"] - 1.5)
+    table = pd.concat([reference, mutant], ignore_index=True)
+    table["log_y"] += table["experiment"].map({"E1": 0.03, "E2": -0.03}) - 0.5 * 1.5
+    table["log_y"] += table["worm_id"].map(worm_offset)
+    worms = sorted(worm_offset, reverse=True)
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0]),
+            "b": ((), [0.5]),
+            "beta": (("effect",), [[0.1]]),
+            "gamma": (("effect",), [[0.2]]),
+            "experiment_effect": (("experiment",), [[0.03, -0.03]]),
+            "worm_effect": (("worm",), [[worm_offset[w] for w in worms]]),
+        },
+        x_ref=1.5,
+    )
+    residuals = result.residuals()
+    assert list(residuals.columns) == [
+        "condition_id",
+        "worm_id",
+        "molt",
+        "experiment",
+        "residual",
+    ]
+    np.testing.assert_allclose(
+        residuals["residual"], table["worm_id"].map(worm_offset), atol=1e-12
+    )
 
 
 def test_reference_predictive_interval_matches_residual_spread():
@@ -324,6 +401,178 @@ def test_summary_converts_beta_to_percent_and_reports_variance_ratios():
     # ratios are taken per draw: (1 + 2) / 2, not 0.05 / 0.03
     assert summary.loc["sigma_ratio[condition=1]", "mean"] == pytest.approx(1.5)
     assert summary.loc["sigma[condition=1]", "mean"] == pytest.approx(0.05)
+
+
+def test_summary_reports_student_t_standard_deviation():
+    coding = pmod.build_genotype_coding([0], reference_condition=0)
+    table = _reference_table({1: [1.0, 2.0]})
+    posterior = {
+        "a": ((), [1.0, 1.0, 1.0]),
+        "b": ((), [0.5, 0.5, 0.5]),
+        "tau": ((), [0.1, 0.1, 0.1]),
+        "sigma": ((), [0.1, 0.2, 0.3]),
+    }
+    normal = _result(table, coding, posterior, x_ref=1.5).summary()
+    assert not normal["parameter"].str.startswith("sigma_sd").any()
+
+    posterior["nu"] = ((), [1.5, 4.0, 6.0])
+    student_t = (
+        _result(table, coding, posterior, x_ref=1.5, likelihood="student_t")
+        .summary()
+        .set_index("parameter")
+    )
+    # sd = sigma * sqrt(nu / (nu - 2)); undefined for the draw with nu <= 2
+    expected = [0.2 * np.sqrt(2), 0.3 * np.sqrt(1.5)]
+    assert student_t.loc["sigma_sd", "mean"] == pytest.approx(np.mean(expected))
+    assert student_t.loc["sigma_sd_undefined_fraction", "mean"] == pytest.approx(1 / 3)
+    assert student_t.loc["sigma", "mean"] == pytest.approx(0.2)
+    assert student_t.attrs["reference_shape"] == "linear"
+
+
+# REFERENCE SPLINE
+
+
+def _spline_reference_table():
+    return _reference_table(
+        {
+            molt: center + np.linspace(-0.1, 0.1, 5)
+            for molt, center in enumerate([1.0, 1.4, 1.8, 2.2], 1)
+        }
+    )
+
+
+def test_spline_basis_is_pure_curvature_inside_the_reference_range():
+    table = _spline_reference_table()
+    log_x = table["log_x"].to_numpy()
+    basis = pmod._build_spline_basis(log_x, x_ref=1.6, n_knots=10)
+    columns = basis.design(log_x)
+    linear = np.column_stack([np.ones_like(log_x), log_x - 1.6])
+    np.testing.assert_allclose(linear.T @ columns, 0, atol=1e-10)
+    # with z ~ Normal(0, 1), E[mean(s²)] over the reference rows is sd_s²
+    assert np.sum(columns**2) / len(log_x) == pytest.approx(1.0)
+    # rotating keeps the prior covariance Z Zᵀ of s
+    rotated = pmod._rotate_spline_basis(basis, log_x, linear)
+    np.testing.assert_allclose(
+        rotated.design(log_x) @ rotated.design(log_x).T, columns @ columns.T, atol=1e-10
+    )
+
+
+def test_spline_reference_curve_extrapolates_linearly_at_the_boundary_slope():
+    coding = pmod.build_genotype_coding([0], reference_condition=0)
+    table = _spline_reference_table()
+    basis = pmod._build_spline_basis(table["log_x"], x_ref=1.6, n_knots=10)
+    rng = np.random.default_rng(0)
+    n_draws, n_columns = 3, basis.penalty_map.shape[1]
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0, 1.1, 0.9]),
+            "b": ((), [0.5, 0.6, 0.4]),
+            "sd_s": ((), [0.05, 0.1, 0.2]),
+            "spline_z": (("spline_basis",), rng.standard_normal((n_draws, n_columns))),
+        },
+        x_ref=1.6,
+        spline_basis=basis,
+    )
+    step, h = 0.1, 1e-6
+    for boundary, direction in ((basis.upper, 1), (basis.lower, -1)):
+        outside = boundary + direction * step * np.arange(1, 6)
+        curve = result.reference_curve(outside)
+        assert curve["extrapolated"].all()
+        np.testing.assert_allclose(np.diff(curve["mean"], n=2), 0, atol=1e-10)
+        # one-sided derivative from inside the range
+        inside = result.reference_curve([boundary - direction * h, boundary])["mean"]
+        boundary_slope = direction * (inside[1] - inside[0]) / h
+        slope = np.diff(curve["mean"]) / (direction * step)
+        np.testing.assert_allclose(slope, boundary_slope, rtol=1e-4)
+    curve = result.reference_curve([basis.lower, 1.6, basis.upper])
+    assert not curve["extrapolated"].any()
+    # the spline is not a line inside the range
+    grid = np.linspace(basis.lower, basis.upper, 7)
+    assert np.abs(np.diff(result.reference_curve(grid)["mean"], n=2)).max() > 1e-3
+
+
+# constant fake draws leave R-hat and ESS undefined
+@pytest.mark.filterwarnings("ignore")
+def test_reference_curve_matches_the_fitted_curve_of_the_model(monkeypatch):
+    # one genotype, one experiment and zero worm effects: the model mean is f
+    table = pmod.build_proportion_table(
+        simulate_allometry(0, cells={0: ALLOMETRY_CELLS[0]}),
+        *ALLOMETRY_COLUMNS,
+        [0],
+    )
+    table = table[table["experiment"] == "E1"].reset_index(drop=True)
+    model_mean = {}
+
+    def fake_sample(draws, chains, **kwargs):
+        model = pm.modelcontext(None)
+        rng = np.random.default_rng(1)
+        point = {
+            name: value + rng.normal(0, 0.5, np.shape(value))
+            for name, value in model.initial_point().items()
+        }
+        point["worm_z"] = np.zeros_like(point["worm_z"])
+        observed = model["log_y"]
+        mu = model.replace_rvs_by_values(
+            [observed.owner.op.dist_params(observed.owner)[0]]
+        )
+        mean = model.compile_fn(
+            mu[0], inputs=model.value_vars, on_unused_input="ignore"
+        )
+        model_mean["value"] = np.broadcast_to(mean(point), (len(table),))
+        values = model.compile_fn(
+            model.unobserved_value_vars,
+            inputs=model.value_vars,
+            on_unused_input="ignore",
+        )(point)
+        posterior = {}
+        for variable, value in zip(model.unobserved_value_vars, values):
+            # transformed value variables such as ``sd_s_log__`` sit beside
+            # their constrained twin
+            name = variable.name
+            if name.endswith("__"):
+                continue
+            dims = model.named_vars_to_dims.get(name, ())
+            posterior[name] = (
+                ("chain", "draw", *dims),
+                np.broadcast_to(value, (chains, draws, *np.shape(value))),
+            )
+        return DataTree.from_dict(
+            {
+                "posterior": Dataset(
+                    posterior,
+                    coords={dim: list(values) for dim, values in model.coords.items()},
+                ),
+                "sample_stats": Dataset(
+                    {"diverging": (("chain", "draw"), np.zeros((chains, draws), bool))}
+                ),
+            }
+        )
+
+    monkeypatch.setattr(pmod.pm, "sample", fake_sample)
+    result = pmod.fit_proportion_model(
+        table,
+        reference_condition=0,
+        reference_shape="spline",
+        draws=2,
+        chains=2,
+        random_seed=0,
+    )
+    assert result.spline_basis.rotation is not None
+    curve = result.reference_curve(table["log_x"].to_numpy())
+    np.testing.assert_allclose(curve["mean"], model_mean["value"], rtol=1e-10)
+    # the spline term is active, so f is not a line
+    log_x = table["log_x"].to_numpy()
+    line = np.polyval(np.polyfit(log_x, curve["mean"], 1), log_x)
+    assert np.abs(curve["mean"] - line).max() > 1e-3
+
+
+def test_smoothness_prior_rate_puts_the_requested_mass_above_upper():
+    rate = pmod._smoothness_prior_rate(0.05, 0.05)
+    assert expon(scale=1 / rate).sf(0.05) == pytest.approx(0.05)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        pmod._smoothness_prior_rate(0.05, 1.0)
 
 
 def _diagnostics_data(chain_means, n_divergences):
@@ -488,3 +737,99 @@ def test_student_t_is_closer_to_truth_in_heavy_tailed_cell():
             )
             errors[likelihood].append(abs(beta - CELLS[3]["beta"]))
     assert np.mean(errors["student_t"]) < np.mean(errors["normal"])
+
+
+# REFERENCE SHAPE
+
+
+def _allometry_fit(exponent_range, reference_shape, cells=ALLOMETRY_CELLS):
+    table = pmod.build_proportion_table(
+        simulate_allometry(1, exponent_range, cells), *ALLOMETRY_COLUMNS, [0, 1]
+    )
+    return pmod.fit_proportion_model(
+        table,
+        reference_condition=0,
+        reference_shape=reference_shape,
+        draws=500,
+        chains=2,
+        random_seed=4,
+    )
+
+
+@pytest.fixture(scope="module")
+def curved_auto_fit():
+    return _allometry_fit((2.4, 3.3), "auto")
+
+
+@pytest.fixture(scope="module")
+def curved_linear_fit():
+    return _allometry_fit((2.4, 3.3), "linear")
+
+
+@pytest.fixture(scope="module")
+def low_gap_fits():
+    return {
+        shape: _allometry_fit((2.4, 3.3), shape, ALLOMETRY_LOW_GAP_CELLS)
+        for shape in ("linear", "spline")
+    }
+
+
+@pytest.fixture(scope="module")
+def straight_auto_fit():
+    return _allometry_fit((3.0, 3.0), "auto")
+
+
+@pytest.fixture(scope="module")
+def straight_spline_fit():
+    return _allometry_fit((3.0, 3.0), "spline")
+
+
+@pytest.mark.slow
+def test_auto_switches_to_spline_for_curved_allometry(curved_auto_fit):
+    assert curved_auto_fit.reference_shape_used == "spline"
+    assert curved_auto_fit.linearity_threshold == 0.03
+    assert curved_auto_fit.linear_misfit["mean_percent"].abs().max() > 3
+    assert (curved_auto_fit.spline_misfit["mean_percent"].abs() < 1).all()
+    summary = curved_auto_fit.summary()
+    assert summary.attrs["reference_shape"] == "spline"
+    assert "sd_s" in summary["parameter"].values
+
+
+@pytest.mark.slow
+def test_spline_recovers_beta_of_mutant_in_gaps(curved_auto_fit, curved_linear_fit):
+    true_beta = ALLOMETRY_CELLS[1]["beta"]
+    spline = curved_auto_fit.summary().set_index("parameter")
+    lower, upper = _interval(spline, "beta[condition[1]]")
+    assert lower < true_beta < upper
+    linear = curved_linear_fit.summary().set_index("parameter")
+    lower, upper = _interval(linear, "beta[condition[1]]")
+    assert upper < true_beta
+
+
+@pytest.mark.slow
+def test_spline_recovers_gamma_of_mutant_in_low_gaps(low_gap_fits):
+    true_gamma = 0.0
+    spline = low_gap_fits["spline"].summary().set_index("parameter")
+    lower, upper = _interval(spline, "gamma[condition[1]]")
+    assert lower < true_gamma < upper
+    linear = low_gap_fits["linear"].summary().set_index("parameter")
+    lower, upper = _interval(linear, "gamma[condition[1]]")
+    assert upper < true_gamma
+
+
+@pytest.mark.slow
+def test_auto_keeps_line_for_straight_allometry(straight_auto_fit):
+    assert straight_auto_fit.reference_shape_used == "linear"
+    assert straight_auto_fit.spline_misfit is None
+    assert straight_auto_fit.linear_misfit["mean_percent"].abs().max() < 3
+
+
+@pytest.mark.slow
+def test_forced_spline_matches_line_for_straight_allometry(
+    straight_auto_fit, straight_spline_fit
+):
+    spline = straight_spline_fit.summary().set_index("parameter")["mean"]
+    linear = straight_auto_fit.summary().set_index("parameter")["mean"]
+    assert spline["sd_s"] < 0.01
+    for parameter in ("beta[condition[1]]", "gamma[condition[1]]"):
+        assert spline[parameter] == pytest.approx(linear[parameter], abs=0.01)
