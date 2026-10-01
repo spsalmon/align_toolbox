@@ -53,6 +53,22 @@ def _warn_remove_outliers_fitting_removed(
 DEVIATION_SCALES = ("log", "percent")
 
 
+def log_ratio_to_percentage(log_ratios: np.ndarray) -> np.ndarray:
+    """
+    Convert natural-log ratios to percent deviations, ``(exp(x) - 1) * 100``.
+
+    Use it to display log-ratio deviations, e.g. as the ``display_transform`` of
+    ``boxplots.violinplot``; compute statistics on the log ratios themselves.
+
+    Parameters:
+        log_ratios (np.ndarray): Natural-log ratios ``log(observed / predicted)``.
+
+    Returns:
+        np.ndarray: Percent deviations, same shape as ``log_ratios``.
+    """
+    return np.expm1(log_ratios) * 100
+
+
 def _resolve_deviation_scale(
     scale: str,
     scale_name: str,
@@ -125,7 +141,9 @@ def _summarize_log_deviations(
     lower = mean - n_standard_errors * ste
     upper = mean + n_standard_errors * ste
     if display_scale == "percent":
-        center, lower, upper = (np.expm1(v) * 100 for v in (center, lower, upper))
+        center, lower, upper = (
+            log_ratio_to_percentage(v) for v in (center, lower, upper)
+        )
     return center, lower, upper
 
 
@@ -640,7 +658,7 @@ def get_deviation_from_model(
             deviation = np.log(values_two) - log_expected_series_two
 
             if deviation_scale == "percent":
-                deviation = np.expm1(deviation) * 100
+                deviation = log_ratio_to_percentage(deviation)
 
             # Create full-length array with NaNs, then fill in the valid values
             full_deviation = np.full(len(correct_indices), np.nan)

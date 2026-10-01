@@ -211,67 +211,16 @@ def mslr_test(
     return statm, pval
 
 
-def _log_ratio_to_percent(values: np.ndarray) -> np.ndarray:
+def _get_stat_test(test: str) -> StatTest:
     """
-    Back-transform natural-log ratios to percent deviations, ``(exp(x) - 1) * 100``.
-
-    Parameters:
-        values (np.ndarray): Natural-log ratios.
-
-    Returns:
-        np.ndarray: Percent deviations.
-    """
-    return np.expm1(values) * 100
-
-
-def _percent_to_log_ratio(values: np.ndarray) -> np.ndarray:
-    """
-    Transform percent deviations to natural-log ratios, ``log(1 + x / 100)``.
-
-    Parameters:
-        values (np.ndarray): Percent deviations.
-
-    Returns:
-        np.ndarray: Natural-log ratios.
-    """
-    return np.log1p(np.asarray(values) / 100)
-
-
-class _TransformedStatTest(StatTest):
-    """
-    A statannotations test that transforms each group's values before testing.
-    """
-
-    def __init__(self, stat_test: StatTest, transform: Callable) -> None:
-        self._stat_test = stat_test
-        self._transform = transform
-
-    @property
-    def short_name(self) -> str:
-        return self._stat_test.short_name
-
-    def __call__(self, group_data1, group_data2, alpha=0.05, **stat_params):
-        return self._stat_test(
-            self._transform(group_data1),
-            self._transform(group_data2),
-            alpha=alpha,
-            **stat_params,
-        )
-
-
-def _get_stat_test(test: str, test_transform: Callable | None = None) -> StatTest:
-    """
-    Build the statannotations test for ``test``, optionally on transformed data.
+    Build the statannotations test for ``test``.
 
     Parameters:
         test (str): Statannotations built-in test name, ``"Feltz-Miller"`` or
             ``"MSLR"``.
-        test_transform (Callable or None): Applied to each group's plotted values
-            before testing, so a plot can show one scale while the test runs on
-            another. (default: None)
 
     Returns:
-        StatTest: The test, to pass to ``Annotator.configure``.
+        StatTest: The test; calling it on two samples returns a ``StatResult``.
 
     Raises:
         ValueError: If ``test`` is not supported.
@@ -291,9 +240,7 @@ def _get_stat_test(test: str, test_transform: Callable | None = None) -> StatTes
             f"Test {test} is not supported. Please use one of the following: "
             f"{list(STATANNOTATIONS_TESTS) + CUSTOM_TESTS}"
         )
-    if test_transform is None:
-        return stat_test
-    return _TransformedStatTest(stat_test, test_transform)
+    return stat_test
 
 
 def _annotate_significance(
@@ -306,10 +253,13 @@ def _annotate_significance(
     plot_type: str = "boxplot",
     test: str = "Mann-Whitney",
     verbose: bool = True,
-    test_transform: Callable | None = None,
+    shown_df: pd.DataFrame | None = None,
 ) -> None:
     """
     Add significance annotations to a single subplot using statannotations.
+
+    The tests run on ``df``; the brackets are placed from ``shown_df``, so the
+    plot can display transformed values while the tests use the original ones.
 
     Parameters:
         df (pandas.DataFrame) : Full data DataFrame with ``"Order"`` and
@@ -326,8 +276,9 @@ def _annotate_significance(
             Defaults to ``"Mann-Whitney"``.
         verbose (bool) : If ``True``, print sample sizes and test details.
             Defaults to ``True``.
-        test_transform (Callable or None) : Applied to the plotted values of each
-            group before testing.  Defaults to ``None``.
+        shown_df (pandas.DataFrame or None) : The values drawn on the axes, with the
+            same layout as ``df``; ``df`` is used when ``None``.
+            Defaults to ``None``.
 
     Raises:
         ValueError : If ``test`` is not supported.
@@ -351,23 +302,30 @@ def _annotate_significance(
         pairs = list(combinations(df["Condition"].unique(), 2))
     else:
         pairs = significance_pairs
+    stat_test = _get_stat_test(test)
+    p_values = [
+        stat_test(
+            df_filtered.loc[df_filtered["Condition"] == first, column].dropna(),
+            df_filtered.loc[df_filtered["Condition"] == second, column].dropna(),
+        ).pvalue
+        for first, second in pairs
+    ]
+
+    if shown_df is None:
+        shown_df = df
     annotator = Annotator(
         ax=boxplot,
         pairs=pairs,
-        data=df_filtered,
+        data=shown_df[shown_df["Order"] == event_index],
         x="Condition",
         order=conditions_to_plot,
         y=column,
         plot=plot_type,
     )
-    stat_test = _get_stat_test(test, test_transform)
     if test == "Mann-Whitney":
-        annotator.configure(
-            test=stat_test, text_format="star", loc="inside", verbose=verbose
-        )
+        annotator.configure(text_format="star", loc="inside", verbose=verbose)
     else:
         annotator.configure(
-            test=stat_test,
             text_format="simple",
             loc="inside",
             verbose=verbose,
@@ -375,7 +333,7 @@ def _annotate_significance(
                 test.capitalize() if test in STATANNOTATIONS_TESTS else test
             ),
         )
-    annotator.apply_and_annotate()
+    annotator.set_pvalues_and_annotate(p_values)
 
 
 def _add_metric_text(
@@ -410,9 +368,9 @@ def _add_metric_text(
             y-axis range.  Defaults to ``0.1``.
         significant_digits (int) : Number of significant digits in the displayed value.
             Defaults to ``3``.
-        display_transform (Callable or None) : If given, ``column`` holds the tested
-            values and the mean and median are mapped through this function to the
-            plotted scale; spread metrics stay on the tested scale.
+        display_transform (Callable or None) : If given, the mean and median are
+            computed on ``column`` and then mapped through this function to the
+            displayed scale; spread metrics stay on the original scale.
             Defaults to ``None``.
 
     Returns:
@@ -513,7 +471,7 @@ def _plot_violinplot(
     show_swarm: bool = True,
     hide_outliers: bool = False,
     inner: str | None = "box",
-    log_ratios_as_percent: bool = False,
+    display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[list[float], list[float]]:
     """
     Draw violin + swarm subplots for each ordering group.
@@ -540,18 +498,16 @@ def _plot_violinplot(
         hide_outliers (bool) : If ``True``, remove data points beyond ±3 std in the
             swarm plot (violin retains them).  Defaults to ``False``.
         inner (str or None) : Passed to seaborn violinplot ``inner`` parameter. Defaults to ``None``.
-        log_ratios_as_percent (bool) : If ``True``, ``column`` holds natural-log
-            ratios that are drawn as percent deviations; tests, outlier detection
-            and metrics use the log ratios.  Defaults to ``False``.
+        display_transform (Callable or None) : Applied to the values only when
+            drawing them; tests, outlier detection and metrics use the original
+            values.  Defaults to ``None``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
     """
     shown_df = df.copy()
-    if log_ratios_as_percent:
-        shown_df[column] = _log_ratio_to_percent(df[column])
-    test_transform = _percent_to_log_ratio if log_ratios_as_percent else None
-    metric_transform = _log_ratio_to_percent if log_ratios_as_percent else None
+    if display_transform is not None:
+        shown_df[column] = display_transform(df[column].to_numpy())
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -624,7 +580,7 @@ def _plot_violinplot(
 
         if plot_significance:
             _annotate_significance(
-                shown_df,
+                df,
                 conditions_to_plot,
                 column,
                 violinplot,
@@ -632,7 +588,7 @@ def _plot_violinplot(
                 event_index,
                 plot_type="violinplot",
                 test=test,
-                test_transform=test_transform,
+                shown_df=shown_df,
             )
 
             if show_metric:
@@ -644,7 +600,7 @@ def _plot_violinplot(
                     event_index,
                     log_scale,
                     test=test,
-                    display_transform=metric_transform,
+                    display_transform=display_transform,
                 )
 
         min_y, max_y = current_ax.get_ylim()
@@ -670,7 +626,7 @@ def _plot_boxplot(
     hide_outliers: bool = False,
     test: str = "Mann-Whitney",
     return_data: bool = False,
-    log_ratios_as_percent: bool = False,
+    display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[list[float], list[float]]:
     """
     Draw box + swarm subplots for each ordering group.
@@ -697,18 +653,16 @@ def _plot_boxplot(
         test (str) : Statistical test for significance annotation.
             Defaults to ``"Mann-Whitney"``.
         return_data (bool) : Unused; reserved for future use.  Defaults to ``False``.
-        log_ratios_as_percent (bool) : If ``True``, ``column`` holds natural-log
-            ratios that are drawn as percent deviations; tests, outlier detection
-            and metrics use the log ratios.  Defaults to ``False``.
+        display_transform (Callable or None) : Applied to the values only when
+            drawing them; tests, outlier detection and metrics use the original
+            values.  Defaults to ``None``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
     """
     shown_df = df.copy()
-    if log_ratios_as_percent:
-        shown_df[column] = _log_ratio_to_percent(df[column])
-    test_transform = _percent_to_log_ratio if log_ratios_as_percent else None
-    metric_transform = _log_ratio_to_percent if log_ratios_as_percent else None
+    if display_transform is not None:
+        shown_df[column] = display_transform(df[column].to_numpy())
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -783,14 +737,14 @@ def _plot_boxplot(
 
         if plot_significance:
             _annotate_significance(
-                shown_df,
+                df,
                 conditions_to_plot,
                 column,
                 boxplot,
                 significance_pairs,
                 event_index,
                 test=test,
-                test_transform=test_transform,
+                shown_df=shown_df,
             )
 
             if show_metric:
@@ -802,7 +756,7 @@ def _plot_boxplot(
                     event_index,
                     log_scale,
                     test=test,
-                    display_transform=metric_transform,
+                    display_transform=display_transform,
                 )
 
         min_y, max_y = current_ax.get_ylim()
@@ -917,24 +871,6 @@ def _set_labels_and_legend(
     add_legend(fig, legend_placement, legend_handles, legend_labels)
 
 
-def _check_log_ratios_as_percent(log_ratios_as_percent: bool, log_scale: bool) -> None:
-    """
-    Reject ``log_ratios_as_percent`` on a log-scaled axis.
-
-    Parameters:
-        log_ratios_as_percent (bool): Whether log ratios are drawn as percent.
-        log_scale (bool): Whether the y axis is drawn in log scale.
-
-    Raises:
-        ValueError: If both are ``True``; percent deviations can be negative.
-    """
-    if log_ratios_as_percent and log_scale:
-        raise ValueError(
-            "log_ratios_as_percent=True draws percent deviations, which can be "
-            "negative; pass log_scale=False."
-        )
-
-
 def violinplot(
     conditions_struct: list,
     column: str,
@@ -957,7 +893,7 @@ def violinplot(
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
-    log_ratios_as_percent: bool = False,
+    display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> matplotlib.figure.Figure:
     """
     Create violin plots for a per-molt measurement across conditions.
@@ -1005,24 +941,18 @@ def violinplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
-        log_ratios_as_percent (bool) : If ``True``, ``column`` holds natural-log
-            ratios (e.g. deviations from ``compute_deviation_from_model_at_ecdysis``)
-            and is drawn back-transformed to percent deviations,
-            ``(exp(x) - 1) * 100``.  Significance tests, outlier hiding and the
-            spread metrics still use the log ratios; mean and median metrics are
-            back-transformed.  Defaults to ``False``.
+        display_transform (Callable or None) : Function applied to the values only
+            when drawing them, e.g. ``proportions.log_ratio_to_percentage`` to show
+            log-ratio deviations as percents.  Significance tests, outlier hiding
+            and spread metrics use the untransformed values; mean and median
+            metrics are computed on them and then transformed.
+            Defaults to ``None``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
         tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
-            ``return_data=True``; the DataFrame holds the tested values (log ratios
-            when ``log_ratios_as_percent`` is ``True``).
-
-    Raises:
-        ValueError : If ``log_ratios_as_percent`` and ``log_scale`` are both
-            ``True``.
+            ``return_data=True``; the DataFrame holds the untransformed values.
     """
-    _check_log_ratios_as_percent(log_ratios_as_percent, log_scale)
 
     color_palette = get_colors(
         conditions_to_plot,
@@ -1073,7 +1003,7 @@ def violinplot(
         show_swarm=show_swarm,
         hide_outliers=hide_outliers,
         test=significance_test,
-        log_ratios_as_percent=log_ratios_as_percent,
+        display_transform=display_transform,
     )
 
     _set_labels_and_legend(
@@ -1126,7 +1056,7 @@ def boxplot(
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
-    log_ratios_as_percent: bool = False,
+    display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> matplotlib.figure.Figure:
     """
     Create box plots for a per-molt measurement across conditions.
@@ -1176,24 +1106,18 @@ def boxplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
-        log_ratios_as_percent (bool) : If ``True``, ``column`` holds natural-log
-            ratios (e.g. deviations from ``compute_deviation_from_model_at_ecdysis``)
-            and is drawn back-transformed to percent deviations,
-            ``(exp(x) - 1) * 100``.  Significance tests, outlier hiding and the
-            spread metrics still use the log ratios; mean and median metrics are
-            back-transformed.  Defaults to ``False``.
+        display_transform (Callable or None) : Function applied to the values only
+            when drawing them, e.g. ``proportions.log_ratio_to_percentage`` to show
+            log-ratio deviations as percents.  Significance tests, outlier hiding
+            and spread metrics use the untransformed values; mean and median
+            metrics are computed on them and then transformed.
+            Defaults to ``None``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
         tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
-            ``return_data=True``; the DataFrame holds the tested values (log ratios
-            when ``log_ratios_as_percent`` is ``True``).
-
-    Raises:
-        ValueError : If ``log_ratios_as_percent`` and ``log_scale`` are both
-            ``True``.
+            ``return_data=True``; the DataFrame holds the untransformed values.
     """
-    _check_log_ratios_as_percent(log_ratios_as_percent, log_scale)
 
     color_palette = get_colors(
         conditions_to_plot,
@@ -1245,7 +1169,7 @@ def boxplot(
         log_scale=log_scale,
         show_metric=show_metric,
         test=significance_test,
-        log_ratios_as_percent=log_ratios_as_percent,
+        display_transform=display_transform,
     )
 
     _set_labels_and_legend(

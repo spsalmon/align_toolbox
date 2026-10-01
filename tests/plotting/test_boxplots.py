@@ -4,7 +4,7 @@ import pytest
 from matplotlib.collections import PathCollection
 from scipy import stats
 
-from align_toolbox.plotting import boxplots
+from align_toolbox.plotting import boxplots, proportions
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ def test_larval_stage_plots_legend_as_xticks(conditions_struct, plot_function):
 
 
 @pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
-def test_log_ratios_drawn_as_percent_are_tested_as_log_ratios(
+def test_display_transform_changes_drawn_values_not_tests(
     conditions_struct, plot_function
 ):
     # equal spread in log ratios, so Levene only differs on the percent scale
@@ -178,7 +178,7 @@ def test_log_ratios_drawn_as_percent_are_tested_as_log_ratios(
     for center, condition in zip([0.0, 0.7], conditions_struct):
         condition["log_dev"] = center + rng.normal(0, 0.2, (30, 1))
     log_values = [c["log_dev"][:, 0] for c in conditions_struct]
-    percent_values = [np.expm1(v) * 100 for v in log_values]
+    percent_values = [proportions.log_ratio_to_percentage(v) for v in log_values]
     assert stats.levene(*log_values).pvalue > 0.05
     assert stats.levene(*percent_values).pvalue < 0.001
 
@@ -191,7 +191,11 @@ def test_log_ratios_drawn_as_percent_are_tested_as_log_ratios(
     )
     raw_fig, _ = plot_function(conditions_struct, "log_dev", [0, 1], **kwargs)
     fig, data = plot_function(
-        conditions_struct, "log_dev", [0, 1], log_ratios_as_percent=True, **kwargs
+        conditions_struct,
+        "log_dev",
+        [0, 1],
+        display_transform=proportions.log_ratio_to_percentage,
+        **kwargs,
     )
 
     np.testing.assert_array_equal(data["log_dev"], np.concatenate(log_values))
@@ -206,5 +210,7 @@ def test_log_ratios_drawn_as_percent_are_tested_as_log_ratios(
     texts = [t.get_text() for t in fig.axes[0].texts]
     assert texts == [t.get_text() for t in raw_fig.axes[0].texts]
     (text,) = texts
+    # the bracket is placed from the drawn values, above the largest percent
+    assert fig.axes[0].texts[0].xy[1] > np.concatenate(percent_values).max()
     shown_p_value = float(text.split("=")[1])
     assert shown_p_value == pytest.approx(stats.levene(*log_values).pvalue, abs=0.01)
