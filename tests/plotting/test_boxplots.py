@@ -2,6 +2,7 @@ import matplotlib.figure
 import numpy as np
 import pytest
 from matplotlib.collections import PathCollection
+from matplotlib.colors import to_rgb
 from scipy import stats
 
 from align_toolbox.plotting import boxplots, proportions
@@ -41,7 +42,9 @@ def test_mslr_detects_different_cvs(equal_cv_samples, different_cv_samples):
     assert p_different < 0.001
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 def test_event_plots_draw_one_panel_per_event(conditions_struct, plot_function):
     fig, data = plot_function(
         conditions_struct,
@@ -62,7 +65,9 @@ def test_event_plots_draw_one_panel_per_event(conditions_struct, plot_function):
     ]
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 @pytest.mark.parametrize("test", ["Mann-Whitney", "Feltz-Miller", "MSLR"])
 def test_event_plots_annotate_significance(conditions_struct, plot_function, test):
     np.random.seed(0)
@@ -85,7 +90,9 @@ def test_event_plots_annotate_significance(conditions_struct, plot_function, tes
     assert texts, "expected significance and metric annotations"
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 def test_event_plots_accept_statannotations_tests(conditions_struct, plot_function):
     fig = plot_function(
         conditions_struct,
@@ -110,7 +117,9 @@ def test_unknown_significance_test_raises_value_error(conditions_struct):
         )
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 def test_event_plots_share_y_axis_with_single_event(conditions_struct, plot_function):
     fig = plot_function(
         conditions_struct,
@@ -135,7 +144,9 @@ def test_larval_stage_plots_draw_four_panels(conditions_struct, plot_function):
     assert not fig.legends
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 def test_event_plots_legend_as_xticks(conditions_struct, plot_function):
     fig = plot_function(
         conditions_struct,
@@ -169,7 +180,9 @@ def test_larval_stage_plots_legend_as_xticks(conditions_struct, plot_function):
     ]
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 def test_display_transform_changes_drawn_values_not_tests(
     conditions_struct, plot_function
 ):
@@ -216,7 +229,9 @@ def test_display_transform_changes_drawn_values_not_tests(
     assert shown_p_value == pytest.approx(stats.levene(*log_values).pvalue, abs=0.01)
 
 
-@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
 def test_several_tests_share_one_bracket(conditions_struct, plot_function):
     # same center, five times the spread: only Levene sees a difference
     rng = np.random.default_rng(0)
@@ -248,3 +263,22 @@ def test_several_tests_share_one_bracket(conditions_struct, plot_function):
         assert float(std_line.split("=")[1]) == pytest.approx(
             np.std(value, ddof=1), rel=5e-3
         )
+
+
+def test_swarmplot_draws_every_worm_in_its_condition_color(conditions_struct):
+    fig = boxplots.swarmplot(
+        conditions_struct,
+        "body_seg_volume_at_ecdysis",
+        [0, 1],
+        events_to_plot=[2],
+        colors=["red", "blue"],
+        log_scale=False,
+    )
+    swarms = [c for c in fig.axes[0].collections if isinstance(c, PathCollection)]
+    assert len(swarms) == 2
+    for swarm, condition, color in zip(swarms, conditions_struct, ["red", "blue"]):
+        np.testing.assert_allclose(
+            np.sort(swarm.get_offsets()[:, 1]),
+            np.sort(condition["body_seg_volume_at_ecdysis"][:, 2]),
+        )
+        np.testing.assert_allclose(swarm.get_facecolors()[:, :3], [to_rgb(color)] * 30)

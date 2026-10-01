@@ -841,6 +841,144 @@ def _plot_boxplot(
     return y_min, y_max
 
 
+def _plot_swarmplot(
+    df: pd.DataFrame,
+    conditions_to_plot: list,
+    column: str,
+    color_palette: list,
+    ax: matplotlib.axes.Axes | np.ndarray,
+    titles: list[str] | None,
+    share_y_axis: bool,
+    plot_significance: bool,
+    significance_pairs: list[tuple] | None,
+    log_scale: bool,
+    show_metric: bool = False,
+    hide_outliers: bool = False,
+    test: str | list[str] = "Mann-Whitney",
+    display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> tuple[list[float], list[float]]:
+    """
+    Draw swarm subplots, colored by condition, for each ordering group.
+
+    Parameters:
+        df (pandas.DataFrame) : Data with ``"Order"``, ``"Condition"``, and
+            ``column`` columns.
+        conditions_to_plot (list) : Ordered condition identifiers.
+        column (str) : Y-variable column name.
+        color_palette (list) : Colors in the same order as ``conditions_to_plot``.
+        ax (np.ndarray or matplotlib.axes.Axes) : Axes array (or scalar) produced
+            by ``_setup_figure``.
+        titles (list[str] or None) : Subplot titles.
+        share_y_axis (bool) : If ``True``, hide y-axis ticks on all but the first subplot.
+        plot_significance (bool) : If ``True``, add significance brackets.
+        significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
+        log_scale (bool) : If ``True``, use a log y axis; also passed to
+            ``_add_metric_text``.
+        show_metric (bool) : If ``True``, display summary statistics below the plot.
+            Defaults to ``False``.
+        hide_outliers (bool) : If ``True``, remove data points beyond ±3 std from the
+            swarm; tests and metrics still use them.  Defaults to ``False``.
+        test (str or list[str]) : Statistical test for significance annotation, or
+            several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
+        display_transform (Callable or None) : Applied to the values only when
+            drawing them; tests, outlier detection and metrics use the original
+            values.  Defaults to ``None``.
+
+    Returns:
+        tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
+    """
+    shown_df = df.copy()
+    if display_transform is not None:
+        shown_df[column] = display_transform(df[column].to_numpy())
+    y_min, y_max = [], []
+    for event_index in range(df["Order"].nunique()):
+        if share_y_axis:
+            if event_index > 0:
+                ax[event_index].tick_params(
+                    axis="y", which="both", left=False, labelleft=False
+                )
+
+        if isinstance(ax, np.ndarray):
+            current_ax = ax[event_index]
+        else:
+            current_ax = ax
+
+        plot_df = shown_df.copy()
+        if hide_outliers:
+            data = df[df["Order"] == event_index]
+            for condition in conditions_to_plot:
+                condition_data = data[data["Condition"] == condition]
+                mean = condition_data[column].mean()
+                std = condition_data[column].std()
+                outliers = condition_data[
+                    (condition_data[column] < mean - 3 * std)
+                    | (condition_data[column] > mean + 3 * std)
+                ]
+                plot_df.loc[outliers.index, column] = np.nan
+
+        # swarm layout is computed in display space, so the scale must be set first
+        if log_scale:
+            current_ax.set_yscale("log")
+
+        swarmplot = sns.swarmplot(
+            data=plot_df[plot_df["Order"] == event_index],
+            x="Condition",
+            y=column,
+            order=conditions_to_plot,
+            hue_order=conditions_to_plot,
+            hue="Condition",
+            palette=color_palette,
+            ax=current_ax,
+            dodge=False,
+            size=_swarm_dot_size(plot_df, event_index, column),
+            edgecolor="black",
+            linewidth=0.5,
+            legend="full",
+        )
+
+        current_ax.set_xlabel("")
+        if event_index > 0:
+            current_ax.set_ylabel("")
+
+        if titles is not None:
+            current_ax.set_title(titles[event_index])
+
+        current_ax.tick_params(
+            axis="x", which="both", bottom=False, top=False, labelbottom=False
+        )
+
+        if plot_significance:
+            # metrics first: they lower the y limit, which would squeeze brackets
+            if show_metric:
+                _add_metric_text(
+                    df,
+                    conditions_to_plot,
+                    column,
+                    swarmplot,
+                    event_index,
+                    log_scale,
+                    test=test,
+                    display_transform=display_transform,
+                )
+            _annotate_significance(
+                df,
+                conditions_to_plot,
+                column,
+                swarmplot,
+                significance_pairs,
+                event_index,
+                plot_type="swarmplot",
+                test=test,
+                shown_df=shown_df,
+            )
+
+        min_y, max_y = current_ax.get_ylim()
+        y_min.append(min_y)
+        y_max.append(max_y)
+
+    return y_min, y_max
+
+
 def _swarm_dot_size(df: pd.DataFrame, event_index: int, column: str) -> float:
     """
     Compute a dot size for swarm plots that shrinks as sample count grows.
@@ -1266,6 +1404,167 @@ def boxplot(
     if share_y_axis:
         _set_all_y_limits(ax, y_min, y_max)
         # set the figure to sharey
+        all_axes = np.atleast_1d(ax)
+        for axes in all_axes:
+            axes.sharey(all_axes[0])
+
+    fig = plt.gcf()
+    plt.show()
+
+    if return_data:
+        return fig, df
+
+    return fig
+
+
+def swarmplot(
+    conditions_struct: list,
+    column: str,
+    conditions_to_plot: list,
+    events_to_plot: list[int] | None = None,
+    log_scale: bool = True,
+    figsize: tuple[float, float] | None = None,
+    ax_size: tuple[float, float] | None = None,
+    colors: list | dict | None = None,
+    plot_significance: bool = False,
+    show_metric: bool = False,
+    significance_pairs: list[tuple] | None = None,
+    significance_test: str | list[str] = "Mann-Whitney",
+    legend: dict | None = None,
+    y_axis_label: str | None = None,
+    titles: list[str] | None = None,
+    share_y_axis: bool = False,
+    hide_outliers: bool = False,
+    return_data: bool = False,
+    legend_placement: str | None = "outside right",
+    legend_as_xticks: bool = False,
+    display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> matplotlib.figure.Figure:
+    """
+    Create swarm plots for a per-molt measurement across conditions.
+
+    Every worm is drawn as one dot colored by its condition.  Each column in
+    ``column`` (axis 1) corresponds to one molt event subplot.
+
+    Parameters:
+        conditions_struct (list) : List of condition dicts.
+        column (str) : Key of the per-molt measurement array
+            (shape ``(n_worms, n_molts)``).
+        conditions_to_plot (list) : Ordered condition identifiers.
+        events_to_plot (list[int] or None) : Column indices (molt events) to include.
+            All events are plotted when ``None``.  Defaults to ``None``.
+        log_scale (bool) : If ``True``, render y-axis in log scale via ``set_yscale``.
+            Defaults to ``True``.
+        figsize (tuple[float, float] or None) : Figure size; auto-sized when ``None``.
+            Defaults to ``None``.
+        ax_size (tuple[float, float] or None) : If provided, each panel's axes area is fixed to
+            ``(ax_w, ax_h)`` inches. Overrides ``figsize``. Defaults to ``None``.
+        colors (list or dict or None) : Color spec passed to ``get_colors``.
+            Defaults to ``None``.
+        plot_significance (bool) : If ``True``, add significance brackets.
+            Defaults to ``False``.
+        show_metric (bool) : If ``True``, display summary statistics below the plot.
+            Defaults to ``False``.
+        significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
+            Defaults to ``None``.
+        significance_test (str or list[str]) : Statistical test for annotation.  With
+            a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
+            per test, stacked in list order and labelled with the test name.
+            Defaults to ``"Mann-Whitney"``.
+        legend (dict or None) : Legend spec passed to ``build_legend``.
+            Defaults to ``None``.
+        y_axis_label (str or None) : Y-axis label; falls back to ``column``.
+            Defaults to ``None``.
+        titles (list[str] or None) : Subplot titles.  Defaults to ``None``.
+        share_y_axis (bool) : If ``True``, synchronise y-axis limits.
+            Defaults to ``False``.
+        hide_outliers (bool) : If ``True``, hide points beyond ±3 std.  Unlike box and
+            violin plots, the swarm is the only element drawn, so this is off by
+            default.  Defaults to ``False``.
+        return_data (bool) : If ``True``, also return the intermediate DataFrame.
+            Defaults to ``False``.
+        legend_placement (str or None) : Figure legend placement passed to
+            ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
+        legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
+            swarm with its legend text on the x axis; ``legend_placement`` is
+            ignored.  Defaults to ``False``.
+        display_transform (Callable or None) : Function applied to the values only
+            when drawing them, e.g. ``proportions.log_ratio_to_percentage`` to show
+            log-ratio deviations as percents.  Significance tests, outlier hiding
+            and spread metrics use the untransformed values; mean and median
+            metrics are computed on them and then transformed.
+            Defaults to ``None``.
+
+    Returns:
+        matplotlib.figure.Figure : The generated figure.
+        tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
+            ``return_data=True``; the DataFrame holds the untransformed values.
+    """
+
+    color_palette = get_colors(
+        conditions_to_plot,
+        colors,
+    )
+
+    # Prepare data
+    data_list = []
+    for condition_id in conditions_to_plot:
+        condition_dict = conditions_struct[condition_id]
+        data = condition_dict[column]
+        if not events_to_plot:
+            events_to_plot = range(conditions_struct[condition_id][column].shape[1])
+
+        for idx, j in enumerate(events_to_plot):
+            for value in data[:, j]:
+                data_list.append(
+                    {
+                        "Condition": condition_id,
+                        "Order": idx,
+                        "Description": condition_dict["description"],
+                        column: value,
+                    }
+                )
+
+    df = pd.DataFrame(data_list)
+
+    fig, ax = _setup_figure(
+        df,
+        figsize,
+        titles,
+        ax_size=ax_size,
+    )
+
+    y_min, y_max = _plot_swarmplot(
+        df,
+        conditions_to_plot,
+        column,
+        color_palette,
+        ax,
+        titles,
+        share_y_axis,
+        plot_significance,
+        significance_pairs,
+        log_scale=log_scale,
+        show_metric=show_metric,
+        hide_outliers=hide_outliers,
+        test=significance_test,
+        display_transform=display_transform,
+    )
+
+    _set_labels_and_legend(
+        ax,
+        fig,
+        conditions_struct,
+        conditions_to_plot,
+        column,
+        y_axis_label,
+        legend,
+        legend_placement,
+        legend_as_xticks,
+    )
+
+    if share_y_axis:
+        _set_all_y_limits(ax, y_min, y_max)
         all_axes = np.atleast_1d(ax)
         for axes in all_axes:
             axes.sharey(all_axes[0])
