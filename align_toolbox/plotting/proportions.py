@@ -1,4 +1,5 @@
 from typing import Any
+from warnings import warn
 
 import matplotlib.figure
 import matplotlib.pyplot as plt
@@ -6,7 +7,6 @@ import numpy as np
 import statsmodels.api as sm
 from scipy import stats
 from scipy.interpolate import make_interp_spline
-from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures
@@ -30,13 +30,32 @@ from .utils_plotting import (
 # MODEL BUILDING
 
 
+def _warn_remove_outliers_fitting_removed(
+    remove_outliers_fitting: bool | None,
+) -> None:
+    """
+    Warn that the removed ``remove_outliers_fitting`` argument was passed and is ignored.
+
+    Parameters:
+        remove_outliers_fitting (bool or None): Value passed by the caller; ``None``
+            means the argument was not passed and nothing is emitted.
+    """
+    if remove_outliers_fitting is not None:
+        warn(
+            "`remove_outliers_fitting` has been removed and is ignored: outliers are "
+            "no longer removed before fitting. Passing it will raise an error in a "
+            "future release.",
+            FutureWarning,
+            stacklevel=3,
+        )
+
+
 def _get_continuous_proportion_model(
     rescaled_series_one: np.ndarray,
     rescaled_series_two: np.ndarray,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
     plot_model: bool = True,
-    remove_outliers: bool = True,
 ) -> Any:
     """
     Fit a LOWESS + linear-spline model to the log-log relationship between two series.
@@ -52,8 +71,6 @@ def _get_continuous_proportion_model(
         y_axis_label (str or None) : Y-axis label for the diagnostic scatter plot.
             Defaults to ``"column two"``.
         plot_model (bool) : If ``True``, display a scatter + LOWESS plot.
-            Defaults to ``True``.
-        remove_outliers (bool) : Unused; reserved for future use.
             Defaults to ``True``.
 
     Returns:
@@ -124,15 +141,13 @@ def _get_proportion_model(
     series_two_values: np.ndarray,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
-    poly_degree: int = 2,
+    poly_degree: int = 1,
     plot_model: bool = True,
-    remove_outliers: bool = True,
 ) -> Any:
     """
     Fit a polynomial OLS model to the log-log relationship between two series.
 
-    Data from all molt events (axis 1) are pooled for fitting.  IsolationForest
-    is used to remove outliers per event when ``remove_outliers=True``.  After
+    Data from all molt events (axis 1) are pooled for fitting. After
     fitting, a ``get_confidence_intervals`` method is attached to the returned
     pipeline for downstream use.
 
@@ -143,11 +158,9 @@ def _get_proportion_model(
             Defaults to ``"column one"``.
         y_axis_label (str or None) : Y-axis label for the diagnostic plot.
             Defaults to ``"column two"``.
-        poly_degree (int) : Degree of the polynomial features.  Defaults to ``2``.
+        poly_degree (int) : Degree of the polynomial features.  Defaults to ``1``.
         plot_model (bool) : If ``True``, display a scatter + fitted model plot with
             confidence bands.  Defaults to ``True``.
-        remove_outliers (bool) : If ``True``, use IsolationForest to remove outliers
-            before fitting.  Defaults to ``True``.
 
     Returns:
         sklearn.pipeline.Pipeline : Fitted pipeline with an additional
@@ -164,7 +177,6 @@ def _get_proportion_model(
 
     alpha = 0.05  # significance level for confidence intervals
 
-    isolation_forest = IsolationForest()
     fitting_x = []
     fitting_y = []
 
@@ -180,25 +192,6 @@ def _get_proportion_model(
         values_two = np.log(values_two)
 
         model_plot_x.extend(values_one)
-
-        if remove_outliers:
-            # remove outliers using an isolation forest
-            outlier_mask = (
-                isolation_forest.fit_predict(np.column_stack((values_one, values_two)))
-                == 1
-            )
-            if plot_model:
-                # plot outliers as empty circles
-                plt.scatter(
-                    values_one[~outlier_mask],
-                    values_two[~outlier_mask],
-                    facecolors="none",
-                    edgecolors="black",
-                )
-
-            values_one = values_one[outlier_mask]
-            values_two = values_two[outlier_mask]
-
         fitting_x.extend(values_one)
         fitting_y.extend(values_two)
 
@@ -294,8 +287,8 @@ def plot_model_comparison_at_ecdysis(
     column_two: str,
     conditions_to_plot: list,
     remove_hatch: bool = True,
-    poly_degree: int = 2,
-    remove_outliers_fitting: bool = True,
+    poly_degree: int = 1,
+    remove_outliers_fitting: bool | None = None,
     log_scale: tuple[bool, bool] | bool = (True, False),
     colors: list | dict | None = None,
     legend: dict | None = None,
@@ -309,7 +302,7 @@ def plot_model_comparison_at_ecdysis(
     Scatter-plot the log-log relationship between two columns at molt events with fitted models.
 
     One polynomial model is fitted per condition.  A shared R² annotation is added to
-    the legend.  Outliers are shown as open circles; inliers as filled markers.
+    the legend.
 
     Parameters:
         conditions_struct (list) : List of condition dicts.
@@ -318,9 +311,10 @@ def plot_model_comparison_at_ecdysis(
         conditions_to_plot (list) : Ordered condition identifiers.
         remove_hatch (bool) : If ``True``, drop the hatch column (index 0).
             Defaults to ``True``.
-        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``2``.
-        remove_outliers_fitting (bool) : If ``True``, use IsolationForest to remove
-            outliers before fitting.  Defaults to ``True``.
+        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
+        remove_outliers_fitting (bool or None) : Removed; ignored with a
+            ``FutureWarning`` and will raise an error in a future release.
+            Defaults to ``None``.
         log_scale (tuple[bool, bool] or bool) : Scale spec passed to ``set_scale``.
             Defaults to ``(True, False)``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
@@ -343,6 +337,8 @@ def plot_model_comparison_at_ecdysis(
     Returns:
         matplotlib.figure.Figure : The generated figure.
     """
+    _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+
     color_palette = get_colors(
         conditions_to_plot,
         colors,
@@ -384,15 +380,12 @@ def plot_model_comparison_at_ecdysis(
             column_two_values,
             poly_degree=poly_degree,
             plot_model=False,
-            remove_outliers=remove_outliers_fitting,
         )
 
         scatter_x = []
         scatter_y = []
         model_plot_x = []
         model_plot_y = []
-
-        isolation_forest = IsolationForest()
 
         for j in range(column_two_values.shape[-1]):
             values_one = column_one_values[:, j].flatten()
@@ -401,32 +394,8 @@ def plot_model_comparison_at_ecdysis(
             values_one = values_one[correct_indices]
             values_two = values_two[correct_indices]
 
-            log_values_one = np.log(values_one)
-            log_values_two = np.log(values_two)
-
             model_plot_x.extend(values_one)
             model_plot_y.extend(values_two)
-
-            if remove_outliers_fitting:
-                # remove outliers using an isolation forest
-                outlier_mask = (
-                    isolation_forest.fit_predict(
-                        np.column_stack((log_values_one, log_values_two))
-                    )
-                    == 1
-                )
-
-                # plot outliers as empty circles
-                current_ax.scatter(
-                    values_one[~outlier_mask],
-                    values_two[~outlier_mask],
-                    facecolors="none",
-                    edgecolors=color_palette[i],
-                    alpha=0.5,
-                )
-
-                values_one = values_one[outlier_mask]
-                values_two = values_two[outlier_mask]
 
             scatter_x.extend(values_one)
             scatter_y.extend(values_two)
@@ -947,8 +916,8 @@ def plot_deviation_from_model_at_ecdysis(
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
-    poly_degree: int = 2,
-    remove_outliers_fitting: bool = True,
+    poly_degree: int = 1,
+    remove_outliers_fitting: bool | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
 ) -> matplotlib.figure.Figure:
@@ -979,9 +948,10 @@ def plot_deviation_from_model_at_ecdysis(
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; auto-generated when ``None``.
             Defaults to ``None``.
-        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``2``.
-        remove_outliers_fitting (bool) : If ``True``, use IsolationForest to remove
-            outliers before fitting.  Defaults to ``True``.
+        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
+        remove_outliers_fitting (bool or None) : Removed; ignored with a
+            ``FutureWarning`` and will raise an error in a future release.
+            Defaults to ``None``.
         ax_size (tuple[float, float] or None) : If provided, fixes the axes area to
             ``(ax_w, ax_h)`` inches. Defaults to ``None``.
         legend_placement (str or None) : Legend placement passed to ``add_legend``;
@@ -990,6 +960,8 @@ def plot_deviation_from_model_at_ecdysis(
     Returns:
         matplotlib.figure.Figure : The generated figure.
     """
+    _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+
     if ax_size is not None:
         create_fixed_ax_sized_fig(
             ax_w=ax_size[0], ax_h=ax_size[1]
@@ -1025,7 +997,6 @@ def plot_deviation_from_model_at_ecdysis(
         y_axis_label=ylbl,
         poly_degree=poly_degree,
         plot_model=True,
-        remove_outliers=remove_outliers_fitting,
     )
 
     # figure got used for the control model, create a new one for the deviations plot
@@ -1100,8 +1071,8 @@ def plot_deviation_from_model_development_percentage(
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
-    poly_degree: int = 2,
-    remove_outliers_fitting: bool = True,
+    poly_degree: int = 1,
+    remove_outliers_fitting: bool | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
 ) -> matplotlib.figure.Figure:
@@ -1132,9 +1103,10 @@ def plot_deviation_from_model_development_percentage(
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; auto-generated when ``None``.
             Defaults to ``None``.
-        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``2``.
-        remove_outliers_fitting (bool) : If ``True``, use IsolationForest to remove
-            outliers before fitting.  Defaults to ``True``.
+        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
+        remove_outliers_fitting (bool or None) : Removed; ignored with a
+            ``FutureWarning`` and will raise an error in a future release.
+            Defaults to ``None``.
         ax_size (tuple[float, float] or None) : If provided, fixes the axes area to
             ``(ax_w, ax_h)`` inches. Defaults to ``None``.
         legend_placement (str or None) : Legend placement passed to ``add_legend``;
@@ -1143,6 +1115,8 @@ def plot_deviation_from_model_development_percentage(
     Returns:
         matplotlib.figure.Figure : The generated figure.
     """
+    _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+
     if ax_size is not None:
         create_fixed_ax_sized_fig(
             ax_w=ax_size[0], ax_h=ax_size[1]
@@ -1351,8 +1325,8 @@ def compute_deviation_from_model_at_ecdysis(
     output_column_name: str,
     remove_hatch: bool = True,
     deviations_as_percentage: bool = True,
-    poly_degree: int = 2,
-    remove_outliers_fitting: bool = True,
+    poly_degree: int = 1,
+    remove_outliers_fitting: bool | None = None,
 ) -> list:
     """
     Compute per-worm deviations from a control-fitted model and store them in conditions_struct.
@@ -1370,13 +1344,16 @@ def compute_deviation_from_model_at_ecdysis(
             fitting and computing deviations.  Defaults to ``True``.
         deviations_as_percentage (bool) : If ``True``, express deviations as percentages.
             Defaults to ``True``.
-        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``2``.
-        remove_outliers_fitting (bool) : If ``True``, use IsolationForest to remove
-            outliers before fitting.  Defaults to ``True``.
+        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
+        remove_outliers_fitting (bool or None) : Removed; ignored with a
+            ``FutureWarning`` and will raise an error in a future release.
+            Defaults to ``None``.
 
     Returns:
         list : The modified ``conditions_struct`` with deviations added in place.
     """
+    _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+
     control_condition = conditions_struct[control_condition]
     control_column_one_values = control_condition[column_one]
     control_column_two_values = control_condition[column_two]
@@ -1390,7 +1367,6 @@ def compute_deviation_from_model_at_ecdysis(
         control_column_two_values,
         poly_degree=poly_degree,
         plot_model=True,
-        remove_outliers=remove_outliers_fitting,
     )
 
     for condition in conditions_struct:
@@ -1420,8 +1396,8 @@ def compute_deviation_from_each_model_at_ecdysis(
     output_column_name: str,
     remove_hatch: bool = True,
     deviations_as_percentage: bool = True,
-    poly_degree: int = 2,
-    remove_outliers_fitting: bool = True,
+    poly_degree: int = 1,
+    remove_outliers_fitting: bool | None = None,
 ) -> list:
     """
     Fit a separate model per condition and store each condition's self-deviation.
@@ -1438,13 +1414,16 @@ def compute_deviation_from_each_model_at_ecdysis(
             fitting.  Defaults to ``True``.
         deviations_as_percentage (bool) : If ``True``, express deviations as percentages.
             Defaults to ``True``.
-        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``2``.
-        remove_outliers_fitting (bool) : If ``True``, use IsolationForest to remove
-            outliers before fitting.  Defaults to ``True``.
+        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
+        remove_outliers_fitting (bool or None) : Removed; ignored with a
+            ``FutureWarning`` and will raise an error in a future release.
+            Defaults to ``None``.
 
     Returns:
         list : The modified ``conditions_struct`` with deviations added in place.
     """
+    _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+
     for condition in conditions_struct:
         column_one_values, column_two_values = (
             condition[column_one],
@@ -1460,7 +1439,6 @@ def compute_deviation_from_each_model_at_ecdysis(
                 column_two_values,
                 poly_degree=poly_degree,
                 plot_model=False,
-                remove_outliers=remove_outliers_fitting,
             )
 
             deviations = get_deviation_from_model(
@@ -1485,8 +1463,8 @@ def compute_deviation_from_model_development_percentage(
     percentages: np.ndarray,
     output_column_name: str,
     deviations_as_percentage: bool = True,
-    poly_degree: int = 2,
-    remove_outliers_fitting: bool = True,
+    poly_degree: int = 1,
+    remove_outliers_fitting: bool | None = None,
 ) -> list:
     """
     Compute per-worm deviations from a control model sampled at development percentages.
@@ -1504,13 +1482,16 @@ def compute_deviation_from_model_development_percentage(
         output_column_name (str) : Key under which deviations are stored.
         deviations_as_percentage (bool) : If ``True``, express deviations as percentages.
             Defaults to ``True``.
-        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``2``.
-        remove_outliers_fitting (bool) : If ``True``, use IsolationForest to remove
-            outliers before fitting.  Defaults to ``True``.
+        poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
+        remove_outliers_fitting (bool or None) : Removed; ignored with a
+            ``FutureWarning`` and will raise an error in a future release.
+            Defaults to ``None``.
 
     Returns:
         list : The modified ``conditions_struct`` with deviations added in place.
     """
+    _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+
     control_condition = conditions_struct[control_condition]
     control_column_one_values = control_condition[column_one]
     control_column_two_values = control_condition[column_two]
@@ -1529,7 +1510,6 @@ def compute_deviation_from_model_development_percentage(
         control_column_two_values,
         poly_degree=poly_degree,
         plot_model=True,
-        remove_outliers=remove_outliers_fitting,
     )
 
     for condition in conditions_struct:

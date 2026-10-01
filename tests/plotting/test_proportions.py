@@ -21,24 +21,13 @@ def _mean_lines(fig):
 
 def test_proportion_model_recovers_log_log_line(power_law):
     x, y = power_law
-    model = proportions._get_proportion_model(
-        x, y, plot_model=False, remove_outliers=False
-    )
+    model = proportions._get_proportion_model(x, y, plot_model=False)
     log_x = np.log(np.array([20.0, 500.0]))
     np.testing.assert_allclose(
         model.predict(log_x.reshape(-1, 1)), np.log(2) + 0.5 * log_x
     )
     prediction, lower, upper = model.get_confidence_intervals(log_x)
     assert (lower <= prediction).all() and (prediction <= upper).all()
-
-
-def test_proportion_model_plot_and_outlier_removal(power_law):
-    x, y = power_law
-    y = y.copy()
-    y[0, :] *= 50
-    model = proportions._get_proportion_model(x, y, poly_degree=1)
-    log_x = np.log(np.array([[100.0]]))
-    assert model.predict(log_x)[0] == pytest.approx(np.log(20), abs=0.1)
 
 
 def test_continuous_proportion_model_follows_the_data(power_law):
@@ -50,9 +39,7 @@ def test_continuous_proportion_model_follows_the_data(power_law):
 
 def test_get_deviation_from_model(power_law):
     x, y = power_law
-    model = proportions._get_proportion_model(
-        x, y, plot_model=False, remove_outliers=False
-    )
+    model = proportions._get_proportion_model(x, y, plot_model=False)
     y_shifted = y * 1.1
     y_shifted[0, 0] = np.nan
     y_shifted[:, 4] = np.nan
@@ -72,7 +59,6 @@ def test_compute_deviation_from_control_model(conditions_struct):
         *COLUMNS,
         control_condition=0,
         output_column_name="dev",
-        remove_outliers_fitting=False,
     )
     assert struct[0]["dev"].shape == (30, 4)
     np.testing.assert_allclose(struct[0]["dev"], 0, atol=1e-6)
@@ -85,7 +71,6 @@ def test_compute_deviation_from_each_model_is_zero_for_exact_data(conditions_str
         *COLUMNS,
         output_column_name="dev",
         remove_hatch=False,
-        remove_outliers_fitting=False,
     )
     assert struct[1]["dev"].shape == (30, 5)
     np.testing.assert_allclose(struct[1]["dev"], 0, atol=1e-6)
@@ -99,7 +84,6 @@ def test_compute_deviation_development_percentage(conditions_struct):
         control_condition=0,
         percentages=np.array([0.1, 0.5, 0.9]),
         output_column_name="dev",
-        remove_outliers_fitting=False,
     )
     assert struct[1]["dev"].shape == (30, 3)
     np.testing.assert_allclose(struct[1]["dev"], 10, atol=1e-4)
@@ -133,7 +117,6 @@ def test_plot_deviation_from_model_at_ecdysis_shows_ten_percent(
         0,
         [0, 1],
         log_scale=False,
-        remove_outliers_fitting=False,
     )
     # the control model diagnostic is shown first, then the deviation plot
     assert shown_figures[-1] is fig and len(shown_figures) == 2
@@ -151,7 +134,6 @@ def test_plot_deviation_from_model_development_percentage(conditions_struct):
         [0, 1],
         percentages=np.array([0.25, 0.5, 0.75]),
         log_scale=False,
-        remove_outliers_fitting=False,
     )
     control, longer = _mean_lines(fig)
     assert len(control.get_xdata()) == 3
