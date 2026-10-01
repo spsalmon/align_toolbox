@@ -1,7 +1,8 @@
 import matplotlib.figure
 import numpy as np
-import pandas as pd
 import pytest
+from matplotlib.collections import PathCollection
+from scipy import stats
 
 from align_toolbox.plotting import boxplots
 
@@ -169,40 +170,41 @@ def test_larval_stage_plots_legend_as_xticks(conditions_struct, plot_function):
 
 
 @pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
-def test_log_ratio_percent_ticks_only_relabel_the_axis(
+def test_log_ratios_drawn_as_percent_are_tested_as_log_ratios(
     conditions_struct, plot_function
 ):
+    # equal spread in log ratios, so Levene only differs on the percent scale
     rng = np.random.default_rng(0)
-    for center, condition in zip([0.0, 0.4], conditions_struct):
-        condition["log_dev"] = rng.normal(center, 0.2, (30, 2))
+    for center, condition in zip([0.0, 0.7], conditions_struct):
+        condition["log_dev"] = center + rng.normal(0, 0.2, (30, 1))
+    log_values = [c["log_dev"][:, 0] for c in conditions_struct]
+    percent_values = [np.expm1(v) * 100 for v in log_values]
+    assert stats.levene(*log_values).pvalue > 0.05
+    assert stats.levene(*percent_values).pvalue < 0.001
+
     kwargs = dict(
-        events_to_plot=[0, 1],
         log_scale=False,
         plot_significance=True,
-        share_y_axis=True,
+        significance_test="Levene",
         hide_outliers=False,
         return_data=True,
     )
-    raw_fig, raw_data = plot_function(conditions_struct, "log_dev", [0, 1], **kwargs)
+    raw_fig, _ = plot_function(conditions_struct, "log_dev", [0, 1], **kwargs)
     fig, data = plot_function(
-        conditions_struct,
-        "log_dev",
-        [0, 1],
-        y_tick_format="log_ratio_as_percent",
-        **kwargs,
+        conditions_struct, "log_dev", [0, 1], log_ratios_as_percent=True, **kwargs
     )
 
-    pd.testing.assert_frame_equal(data, raw_data)
-    for ax, raw_ax in zip(fig.axes, raw_fig.axes):
-        swarm, raw_swarm = ax.collections[-1], raw_ax.collections[-1]
-        np.testing.assert_array_equal(swarm.get_offsets(), raw_swarm.get_offsets())
-        assert ax.get_ylim() == raw_ax.get_ylim()
-        assert [t.get_text() for t in ax.texts] == [t.get_text() for t in raw_ax.texts]
-
-    # with a shared y axis only the first panel shows tick labels
-    ax = fig.axes[0]
-    percents = np.array([float(t.get_text().rstrip("%")) for t in ax.get_yticklabels()])
-    assert len(percents) >= 3 and 0 in percents
-    np.testing.assert_allclose(ax.get_yticks(), np.log1p(percents / 100))
-    low, high = ax.get_ylim()
-    assert ((low <= ax.get_yticks()) & (ax.get_yticks() <= high)).all()
+    np.testing.assert_array_equal(data["log_dev"], np.concatenate(log_values))
+    swarm = np.concatenate(
+        [
+            c.get_offsets()[:, 1]
+            for c in fig.axes[0].collections
+            if isinstance(c, PathCollection)
+        ]
+    )
+    np.testing.assert_allclose(np.sort(swarm), np.sort(np.concatenate(percent_values)))
+    texts = [t.get_text() for t in fig.axes[0].texts]
+    assert texts == [t.get_text() for t in raw_fig.axes[0].texts]
+    (text,) = texts
+    shown_p_value = float(text.split("=")[1])
+    assert shown_p_value == pytest.approx(stats.levene(*log_values).pvalue, abs=0.01)
