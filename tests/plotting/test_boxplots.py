@@ -1,5 +1,6 @@
 import matplotlib.figure
 import numpy as np
+import pandas as pd
 import pytest
 
 from align_toolbox.plotting import boxplots
@@ -165,3 +166,43 @@ def test_larval_stage_plots_legend_as_xticks(conditions_struct, plot_function):
         "Condition 0",
         "Condition 1",
     ]
+
+
+@pytest.mark.parametrize("plot_function", [boxplots.boxplot, boxplots.violinplot])
+def test_log_ratio_percent_ticks_only_relabel_the_axis(
+    conditions_struct, plot_function
+):
+    rng = np.random.default_rng(0)
+    for center, condition in zip([0.0, 0.4], conditions_struct):
+        condition["log_dev"] = rng.normal(center, 0.2, (30, 2))
+    kwargs = dict(
+        events_to_plot=[0, 1],
+        log_scale=False,
+        plot_significance=True,
+        share_y_axis=True,
+        hide_outliers=False,
+        return_data=True,
+    )
+    raw_fig, raw_data = plot_function(conditions_struct, "log_dev", [0, 1], **kwargs)
+    fig, data = plot_function(
+        conditions_struct,
+        "log_dev",
+        [0, 1],
+        y_tick_format="log_ratio_as_percent",
+        **kwargs,
+    )
+
+    pd.testing.assert_frame_equal(data, raw_data)
+    for ax, raw_ax in zip(fig.axes, raw_fig.axes):
+        swarm, raw_swarm = ax.collections[-1], raw_ax.collections[-1]
+        np.testing.assert_array_equal(swarm.get_offsets(), raw_swarm.get_offsets())
+        assert ax.get_ylim() == raw_ax.get_ylim()
+        assert [t.get_text() for t in ax.texts] == [t.get_text() for t in raw_ax.texts]
+
+    # with a shared y axis only the first panel shows tick labels
+    ax = fig.axes[0]
+    percents = np.array([float(t.get_text().rstrip("%")) for t in ax.get_yticklabels()])
+    assert len(percents) >= 3 and 0 in percents
+    np.testing.assert_allclose(ax.get_yticks(), np.log1p(percents / 100))
+    low, high = ax.get_ylim()
+    assert ((low <= ax.get_yticks()) & (ax.get_yticks() <= high)).all()

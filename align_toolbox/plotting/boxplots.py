@@ -1,4 +1,5 @@
 from itertools import combinations
+from typing import Literal
 
 import bottleneck as bn
 import matplotlib.axes
@@ -16,11 +17,13 @@ from .utils_plotting import (
     add_legend,
     build_legend,
     create_fixed_ax_sized_fig,
+    format_log_ratio_ticks_as_percent,
     get_colors,
 )
 
 STATANNOTATIONS_TESTS = STATTEST_LIBRARY.keys()
 CUSTOM_TESTS = ["Feltz-Miller", "MSLR"]
+Y_TICK_FORMATS = ("raw", "log_ratio_as_percent")
 
 
 def _setup_figure(
@@ -834,6 +837,30 @@ def _set_labels_and_legend(
     add_legend(fig, legend_placement, legend_handles, legend_labels)
 
 
+def _check_y_tick_format(y_tick_format: str, log_scale: bool) -> None:
+    """
+    Validate the ``y_tick_format`` argument of ``violinplot`` and ``boxplot``.
+
+    Parameters:
+        y_tick_format (str): Requested tick format.
+        log_scale (bool): Whether the y axis is drawn in log scale.
+
+    Raises:
+        ValueError: If ``y_tick_format`` is unknown, or is ``"log_ratio_as_percent"``
+            on a log-scaled axis, where negative log ratios cannot be drawn.
+    """
+    if y_tick_format not in Y_TICK_FORMATS:
+        raise ValueError(
+            f"Invalid y_tick_format {y_tick_format!r}; expected one of "
+            f"{Y_TICK_FORMATS}."
+        )
+    if y_tick_format == "log_ratio_as_percent" and log_scale:
+        raise ValueError(
+            "y_tick_format='log_ratio_as_percent' expects log ratios on a linear "
+            "axis; pass log_scale=False."
+        )
+
+
 def violinplot(
     conditions_struct: list,
     column: str,
@@ -856,6 +883,7 @@ def violinplot(
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    y_tick_format: Literal["raw", "log_ratio_as_percent"] = "raw",
 ) -> matplotlib.figure.Figure:
     """
     Create violin plots for a per-molt measurement across conditions.
@@ -903,12 +931,23 @@ def violinplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        y_tick_format (str) : ``"raw"`` labels y ticks with the data values;
+            ``"log_ratio_as_percent"`` treats ``column`` as natural-log ratios
+            (e.g. deviations from ``compute_deviation_from_model_at_ecdysis``) and
+            labels ticks as percent deviations.  Only the labels change: the data
+            and the significance tests stay on the log scale.  Defaults to ``"raw"``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
         tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
             ``return_data=True``.
+
+    Raises:
+        ValueError : If ``y_tick_format`` is unknown, or is
+            ``"log_ratio_as_percent"`` while ``log_scale`` is ``True``.
     """
+    _check_y_tick_format(y_tick_format, log_scale)
+
     color_palette = get_colors(
         conditions_to_plot,
         colors,
@@ -979,6 +1018,10 @@ def violinplot(
         for axes in all_axes:
             axes.sharey(all_axes[0])
 
+    if y_tick_format == "log_ratio_as_percent":
+        for axes in np.atleast_1d(ax):
+            format_log_ratio_ticks_as_percent(axes)
+
     fig = plt.gcf()
     plt.show()
 
@@ -1010,6 +1053,7 @@ def boxplot(
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    y_tick_format: Literal["raw", "log_ratio_as_percent"] = "raw",
 ) -> matplotlib.figure.Figure:
     """
     Create box plots for a per-molt measurement across conditions.
@@ -1059,12 +1103,23 @@ def boxplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        y_tick_format (str) : ``"raw"`` labels y ticks with the data values;
+            ``"log_ratio_as_percent"`` treats ``column`` as natural-log ratios
+            (e.g. deviations from ``compute_deviation_from_model_at_ecdysis``) and
+            labels ticks as percent deviations.  Only the labels change: the data
+            and the significance tests stay on the log scale.  Defaults to ``"raw"``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
         tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
             ``return_data=True``.
+
+    Raises:
+        ValueError : If ``y_tick_format`` is unknown, or is
+            ``"log_ratio_as_percent"`` while ``log_scale`` is ``True``.
     """
+    _check_y_tick_format(y_tick_format, log_scale)
+
     color_palette = get_colors(
         conditions_to_plot,
         colors,
@@ -1135,6 +1190,10 @@ def boxplot(
         all_axes = np.atleast_1d(ax)
         for axes in all_axes:
             axes.sharey(all_axes[0])
+
+    if y_tick_format == "log_ratio_as_percent":
+        for axes in np.atleast_1d(ax):
+            format_log_ratio_ticks_as_percent(axes)
 
     fig = plt.gcf()
     plt.show()

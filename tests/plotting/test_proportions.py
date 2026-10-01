@@ -45,12 +45,32 @@ def test_get_deviation_from_model(power_law):
     y_shifted[:, 4] = np.nan
     deviations = proportions.get_deviation_from_model(x, y_shifted, model)
     assert deviations.shape == (40, 5)
-    np.testing.assert_allclose(deviations[1:, :4], 10, atol=1e-6)
+    np.testing.assert_allclose(deviations[1:, :4], np.log(1.1), atol=1e-8)
     assert np.isnan(deviations[0, 0]) and np.isnan(deviations[:, 4]).all()
-    fraction = proportions.get_deviation_from_model(
-        x, y_shifted, model, percentage=False
+    percent = proportions.get_deviation_from_model(
+        x, y_shifted, model, deviation_scale="percent"
     )
-    np.testing.assert_allclose(fraction[1:, :4], 0.1, atol=1e-8)
+    np.testing.assert_allclose(percent[1:, :4], 10, atol=1e-6)
+    assert np.isnan(percent[0, 0]) and np.isnan(percent[:, 4]).all()
+
+
+def test_log_deviations_are_symmetric(power_law):
+    x, y = power_law
+    model = proportions._get_proportion_model(x, y, plot_model=False)
+    doubled = proportions.get_deviation_from_model(x, y * 2, model)
+    halved = proportions.get_deviation_from_model(x, y * 0.5, model)
+    np.testing.assert_allclose(doubled, np.log(2), atol=1e-8)
+    np.testing.assert_allclose(halved, -doubled, atol=1e-8)
+
+
+def test_deprecated_percentage_flag_reproduces_percent_output(power_law):
+    x, y = power_law
+    model = proportions._get_proportion_model(x, y, plot_model=False)
+    with pytest.warns(DeprecationWarning, match="percentage"):
+        deviations = proportions.get_deviation_from_model(
+            x, y * 1.1, model, percentage=True
+        )
+    np.testing.assert_allclose(deviations, 10, atol=1e-6)
 
 
 def test_compute_deviation_from_control_model(conditions_struct):
@@ -62,7 +82,7 @@ def test_compute_deviation_from_control_model(conditions_struct):
     )
     assert struct[0]["dev"].shape == (30, 4)
     np.testing.assert_allclose(struct[0]["dev"], 0, atol=1e-6)
-    np.testing.assert_allclose(struct[1]["dev"], 10, atol=1e-6)
+    np.testing.assert_allclose(struct[1]["dev"], np.log(1.1), atol=1e-8)
 
 
 def test_compute_deviation_from_each_model_is_zero_for_exact_data(conditions_struct):
@@ -86,7 +106,7 @@ def test_compute_deviation_development_percentage(conditions_struct):
         output_column_name="dev",
     )
     assert struct[1]["dev"].shape == (30, 3)
-    np.testing.assert_allclose(struct[1]["dev"], 10, atol=1e-4)
+    np.testing.assert_allclose(struct[1]["dev"], np.log(1.1), atol=1e-6)
 
 
 @pytest.mark.parametrize("single_plot", [True, False])
@@ -123,6 +143,39 @@ def test_plot_deviation_from_model_at_ecdysis_shows_ten_percent(
     control, longer = _mean_lines(fig)
     np.testing.assert_allclose(control.get_ydata(), 0, atol=1e-6)
     np.testing.assert_allclose(longer.get_ydata(), 10, atol=1e-6)
+
+
+def test_plot_deviation_percent_summary_is_back_transformed_log_mean(
+    conditions_struct,
+):
+    rng = np.random.default_rng(1)
+    noisy = conditions_struct[1]
+    noisy["body_seg_length_at_ecdysis"] = noisy[
+        "body_seg_length_at_ecdysis"
+    ] * rng.lognormal(0, 0.3, noisy["body_seg_length_at_ecdysis"].shape)
+    log_deviations = proportions.compute_deviation_from_model_at_ecdysis(
+        conditions_struct,
+        *COLUMNS,
+        control_condition=0,
+        output_column_name="dev",
+        remove_hatch=False,
+    )[1]["dev"]
+    log_mean = log_deviations.mean(axis=0)
+    log_ste = log_deviations.std(axis=0) / np.sqrt(log_deviations.shape[0])
+
+    fig = proportions.plot_deviation_from_model_at_ecdysis(
+        conditions_struct, *COLUMNS, 0, [1], log_scale=False
+    )
+    (line,) = _mean_lines(fig)
+    np.testing.assert_allclose(line.get_ydata(), np.expm1(log_mean) * 100)
+    (error_bars,) = fig.axes[0].collections
+    lower, upper = np.array([segment[:, 1] for segment in error_bars.get_segments()]).T
+    np.testing.assert_allclose(lower, np.expm1(log_mean - log_ste) * 100)
+    np.testing.assert_allclose(upper, np.expm1(log_mean + log_ste) * 100)
+    # exp is convex, so the upper arm is always the longer one
+    center = line.get_ydata()
+    assert (upper - center > center - lower).all()
+    assert fig.axes[0].get_ylabel().endswith("(%)")
 
 
 def test_plot_deviation_from_model_development_percentage(conditions_struct):

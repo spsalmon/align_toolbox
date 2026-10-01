@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from matplotlib.legend import Legend
+from matplotlib.ticker import MaxNLocator
 from mpl_toolkits.axes_grid1 import Divider, Size
 
 # THIS PART IS MOSTLY ABOUT HANDLING LEGENDS, SAVING FIGURES, ETC.
@@ -206,6 +207,31 @@ def set_scale(ax: matplotlib.axes.Axes, log_scale: bool | tuple | list) -> None:
     elif isinstance(log_scale, list):
         ax.set_yscale("log" if log_scale[1] else "linear")
         ax.set_xscale("log" if log_scale[0] else "linear")
+
+
+def format_log_ratio_ticks_as_percent(
+    ax: matplotlib.axes.Axes, n_ticks: int = 6
+) -> None:
+    """
+    Relabel the y ticks of an axis showing natural-log ratios as percent deviations.
+
+    The plotted data and axis limits are left untouched: ticks are placed at
+    ``log(1 + p / 100)`` for round percent values ``p`` spanning the current
+    y limits and labelled ``"p%"``. Call it after the y limits are final.
+
+    Parameters:
+        ax (matplotlib.axes.Axes): Axes whose y values are natural-log ratios.
+        n_ticks (int): Maximum number of tick intervals, passed to ``MaxNLocator``.
+            (default: 6)
+    """
+    y_min, y_max = ax.get_ylim()
+    percent_min, percent_max = np.expm1([y_min, y_max]) * 100
+    percents = MaxNLocator(nbins=n_ticks).tick_values(percent_min, percent_max)
+    percents = percents[
+        (percents > -100) & (percents >= percent_min) & (percents <= percent_max)
+    ]
+    ax.set_yticks(np.log1p(percents / 100), labels=[f"{p:g}%" for p in percents])
+    ax.set_yticks([], minor=True)
 
 
 def get_colors(

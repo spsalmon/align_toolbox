@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from warnings import warn
 
 import matplotlib.figure
@@ -48,6 +48,100 @@ def _warn_remove_outliers_fitting_removed(
             FutureWarning,
             stacklevel=3,
         )
+
+
+DEVIATION_SCALES = ("log", "percent")
+
+
+def _resolve_deviation_scale(
+    scale: str,
+    scale_name: str,
+    deprecated_name: str,
+    deprecated_value: bool | None,
+) -> str:
+    """
+    Validate a deviation scale, letting a deprecated boolean flag override it.
+
+    Parameters:
+        scale (str): Requested scale, ``"log"`` or ``"percent"``.
+        scale_name (str): Name of the argument that replaces the deprecated one,
+            used in the warning message.
+        deprecated_name (str): Name of the deprecated boolean argument, used in the
+            warning message.
+        deprecated_value (bool or None): Value of the deprecated argument; ``None``
+            means it was not passed. ``True`` maps to ``"percent"`` and ``False`` to
+            ``"log"``, with a ``DeprecationWarning``.
+
+    Returns:
+        str: The resolved scale.
+
+    Raises:
+        ValueError: If ``scale`` is not one of ``DEVIATION_SCALES``.
+    """
+    if deprecated_value is not None:
+        scale = "percent" if deprecated_value else "log"
+        warn(
+            f"`{deprecated_name}` is deprecated; use `{scale_name}={scale!r}` "
+            "instead. Passing it will raise an error in a future release.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    if scale not in DEVIATION_SCALES:
+        raise ValueError(
+            f"Invalid deviation scale {scale!r}; expected one of {DEVIATION_SCALES}."
+        )
+    return scale
+
+
+def _summarize_log_deviations(
+    log_deviations: np.ndarray,
+    display_scale: str,
+    n_standard_errors: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Summarize log-ratio deviations per column as a center and an error interval.
+
+    The mean and standard error are always computed on the log scale. For
+    ``"percent"`` display, the center and bounds are back-transformed with
+    ``(exp(x) - 1) * 100``, which gives a geometric-mean-based relative deviation
+    with asymmetric bounds.
+
+    Parameters:
+        log_deviations (np.ndarray): Log-ratio deviations of shape
+            ``(n_worms, n_points)``; NaN values are ignored.
+        display_scale (str): ``"log"`` or ``"percent"``.
+        n_standard_errors (float): Half-width of the interval in standard errors.
+            (default: 1.0)
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, np.ndarray]: Center, lower bound and upper
+            bound, each of shape ``(n_points,)``, in the display scale.
+    """
+    mean = np.nanmean(log_deviations, axis=0)
+    ste = np.nanstd(log_deviations, axis=0) / np.sqrt(
+        np.sum(~np.isnan(log_deviations), axis=0)
+    )
+    center = mean
+    lower = mean - n_standard_errors * ste
+    upper = mean + n_standard_errors * ste
+    if display_scale == "percent":
+        center, lower, upper = (np.expm1(v) * 100 for v in (center, lower, upper))
+    return center, lower, upper
+
+
+def _default_deviation_label(column: str, display_scale: str) -> str:
+    """
+    Build the default y-axis label for a deviation plot.
+
+    Parameters:
+        column (str): Name of the modeled measurement.
+        display_scale (str): ``"log"`` or ``"percent"``.
+
+    Returns:
+        str: The axis label.
+    """
+    unit = "%" if display_scale == "percent" else "log ratio"
+    return f"deviation from modeled {column} ({unit})"
 
 
 def _get_continuous_proportion_model(
@@ -491,27 +585,39 @@ def get_deviation_from_model(
     series_one_values: np.ndarray,
     series_two_values: np.ndarray,
     model: Any,
-    percentage: bool = True,
+    deviation_scale: Literal["log", "percent"] = "log",
+    percentage: bool | None = None,
 ) -> np.ndarray:
     """
     Compute per-worm deviations from a proportion model at each molt event.
 
     For each event (axis 1), the model is evaluated on log(series_one) to predict
-    log(series_two).  The deviation is ``exp(log(actual) - log(predicted)) - 1``,
-    optionally multiplied by 100 for percentages.
+    log(series_two). The native deviation is the log ratio
+    ``r = log(actual) - log(predicted)``, which is symmetric (a ×2 and a ×0.5 shift
+    have equal magnitude) and is the scale on which statistics should be computed.
+    ``"percent"`` returns ``(exp(r) - 1) * 100`` for display.
 
     Parameters:
         series_one_values (np.ndarray) : X values of shape ``(n_worms, n_molts)``.
         series_two_values (np.ndarray) : Y values of shape ``(n_worms, n_molts)``.
         model : Fitted model with a ``predict`` method (sklearn Pipeline) or a
             callable (LOWESS spline) accepting log-transformed X values.
-        percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        deviation_scale (str) : ``"log"`` for natural-log ratios or ``"percent"``
+            for percent relative deviations.  Defaults to ``"log"``.
+        percentage (bool or None) : Deprecated; ``True`` maps to
+            ``deviation_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         np.ndarray : Deviations of shape ``(n_worms, n_molts)``; NaN where either
             input value is NaN.
+
+    Raises:
+        ValueError : If ``deviation_scale`` is not ``"log"`` or ``"percent"``.
     """
+    deviation_scale = _resolve_deviation_scale(
+        deviation_scale, "deviation_scale", "percentage", percentage
+    )
     deviations = []
     for i in range(series_two_values.shape[-1]):
         values_one = series_one_values[:, i].flatten()
@@ -531,10 +637,10 @@ def get_deviation_from_model(
             except AttributeError:
                 # Continuous models do not have predict method, use the model directly
                 log_expected_series_two = model(np.log(values_one))
-            deviation = np.exp(np.log(values_two) - log_expected_series_two) - 1
+            deviation = np.log(values_two) - log_expected_series_two
 
-            if percentage:
-                deviation = deviation * 100
+            if deviation_scale == "percent":
+                deviation = np.expm1(deviation) * 100
 
             # Create full-length array with NaNs, then fill in the valid values
             full_deviation = np.full(len(correct_indices), np.nan)
@@ -775,7 +881,7 @@ def plot_continuous_deviation_from_model(
     rescaled_column_two: str,
     control_condition_id: int,
     conditions_to_plot: list,
-    deviation_as_percentage: bool = True,
+    display_scale: Literal["log", "percent"] = "percent",
     colors: list | dict | None = None,
     log_scale: tuple[bool, bool] | bool = (True, False),
     legend: dict | None = None,
@@ -784,6 +890,7 @@ def plot_continuous_deviation_from_model(
     sort_values: bool = False,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
+    deviation_as_percentage: bool | None = None,
 ) -> matplotlib.figure.Figure:
     """
     Plot the deviation from a LOWESS model as a continuous line across the rescaled axis.
@@ -792,14 +899,20 @@ def plot_continuous_deviation_from_model(
     (including the control) are then plotted as mean ± 95% CI of their per-worm
     deviations from that model.
 
+    Deviations are log ratios; the mean and standard error are always computed on
+    the log scale. With ``display_scale="percent"`` they are back-transformed with
+    ``(exp(x) - 1) * 100``, so the plotted center is a geometric-mean-based relative
+    deviation and the error bars are asymmetric.
+
     Parameters:
         conditions_struct (list) : List of condition dicts.
         rescaled_column_one (str) : Key of the rescaled X series.
         rescaled_column_two (str) : Key of the rescaled Y series.
         control_condition_id (int) : Index of the control condition used to fit the model.
         conditions_to_plot (list) : Ordered condition identifiers.
-        deviation_as_percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        display_scale (str) : Axis scale, ``"percent"`` or ``"log"`` (log ratio).
+            Only affects display; statistics are computed on log ratios.
+            Defaults to ``"percent"``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
         log_scale (tuple[bool, bool] or bool) : Scale spec passed to ``set_scale``.
@@ -816,10 +929,22 @@ def plot_continuous_deviation_from_model(
             ``(ax_w, ax_h)`` inches. Defaults to ``None``.
         legend_placement (str or None) : Legend placement passed to ``add_legend``;
             ``None`` hides the legend.  Defaults to ``"best"``.
+        deviation_as_percentage (bool or None) : Deprecated; ``True`` maps to
+            ``display_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
+
+    Raises:
+        ValueError : If ``display_scale`` is not ``"log"`` or ``"percent"``.
     """
+    display_scale = _resolve_deviation_scale(
+        display_scale,
+        "display_scale",
+        "deviation_as_percentage",
+        deviation_as_percentage,
+    )
     if ax_size is not None:
         create_fixed_ax_sized_fig(
             ax_w=ax_size[0], ax_h=ax_size[1]
@@ -836,7 +961,7 @@ def plot_continuous_deviation_from_model(
     y_axis_label = (
         y_axis_label
         if y_axis_label is not None
-        else f"deviation from modeled {rescaled_column_two}"
+        else _default_deviation_label(rescaled_column_two, display_scale)
     )
 
     control_condition = conditions_struct[control_condition_id]
@@ -859,7 +984,7 @@ def plot_continuous_deviation_from_model(
             rescaled_column_one_values,
             rescaled_column_two_values,
             control_model,
-            percentage=deviation_as_percentage,
+            deviation_scale="log",
         )
 
         if sort_values:
@@ -870,9 +995,8 @@ def plot_continuous_deviation_from_model(
             residuals = np.take_along_axis(residuals, sorted_indices, axis=1)
 
         average_column_one_values = np.nanmean(rescaled_column_one_values, axis=0)
-        average_residuals = np.nanmean(residuals, axis=0)
-        ste_residuals = np.nanstd(residuals, axis=0) / np.sqrt(
-            np.sum(~np.isnan(residuals), axis=0)
+        average_residuals, lower_residuals, upper_residuals = _summarize_log_deviations(
+            residuals, display_scale, n_standard_errors=1.96
         )
 
         label = build_legend(condition, legend)
@@ -884,8 +1008,8 @@ def plot_continuous_deviation_from_model(
         )
         plt.fill_between(
             average_column_one_values,
-            average_residuals - 1.96 * ste_residuals,
-            average_residuals + 1.96 * ste_residuals,
+            lower_residuals,
+            upper_residuals,
             color=color_palette[i],
             alpha=0.2,
         )
@@ -910,7 +1034,7 @@ def plot_deviation_from_model_at_ecdysis(
     control_condition_id: int,
     conditions_to_plot: list,
     remove_hatch: bool = False,
-    deviation_as_percentage: bool = True,
+    display_scale: Literal["log", "percent"] = "percent",
     log_scale: tuple[bool, bool] | bool = (True, False),
     colors: list | dict | None = None,
     legend: dict | None = None,
@@ -920,6 +1044,7 @@ def plot_deviation_from_model_at_ecdysis(
     remove_outliers_fitting: bool | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
+    deviation_as_percentage: bool | None = None,
 ) -> matplotlib.figure.Figure:
     """
     Plot the per-condition deviation from a polynomial model at each molt event.
@@ -927,6 +1052,11 @@ def plot_deviation_from_model_at_ecdysis(
     A polynomial OLS model is fitted on the control condition; for each other
     condition, the mean deviation and its standard error are plotted as a line with
     error bars over the mean X values at each molt.
+
+    Deviations are log ratios; the mean and standard error are always computed on
+    the log scale. With ``display_scale="percent"`` they are back-transformed with
+    ``(exp(x) - 1) * 100``, so the plotted center is a geometric-mean-based relative
+    deviation and the error bars are asymmetric.
 
     Parameters:
         conditions_struct (list) : List of condition dicts.
@@ -936,8 +1066,9 @@ def plot_deviation_from_model_at_ecdysis(
         conditions_to_plot (list) : Ordered condition identifiers.
         remove_hatch (bool) : If ``True``, drop the hatch column (index 0).
             Defaults to ``False``.
-        deviation_as_percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        display_scale (str) : Axis scale, ``"percent"`` or ``"log"`` (log ratio).
+            Only affects display; statistics are computed on log ratios.
+            Defaults to ``"percent"``.
         log_scale (tuple[bool, bool] or bool) : Scale spec passed to ``set_scale``.
             Defaults to ``(True, False)``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
@@ -956,10 +1087,22 @@ def plot_deviation_from_model_at_ecdysis(
             ``(ax_w, ax_h)`` inches. Defaults to ``None``.
         legend_placement (str or None) : Legend placement passed to ``add_legend``;
             ``None`` hides the legend.  Defaults to ``"best"``.
+        deviation_as_percentage (bool or None) : Deprecated; ``True`` maps to
+            ``display_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
+
+    Raises:
+        ValueError : If ``display_scale`` is not ``"log"`` or ``"percent"``.
     """
+    display_scale = _resolve_deviation_scale(
+        display_scale,
+        "display_scale",
+        "deviation_as_percentage",
+        deviation_as_percentage,
+    )
     _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
 
     if ax_size is not None:
@@ -978,7 +1121,7 @@ def plot_deviation_from_model_at_ecdysis(
     y_axis_label = (
         y_axis_label
         if y_axis_label is not None
-        else f"deviation from modeled {column_two}"
+        else _default_deviation_label(column_two, display_scale)
     )
 
     control_condition = conditions_struct[control_condition_id]
@@ -1018,14 +1161,12 @@ def plot_deviation_from_model_at_ecdysis(
             column_one_values,
             column_two_values,
             control_model,
-            percentage=deviation_as_percentage,
+            deviation_scale="log",
         )
 
         mean_column_one_values = np.nanmean(column_one_values, axis=0)
-        mean_deviations = np.nanmean(deviations, axis=0)
-        # std_deviations = np.nanstd(deviations, axis=0)
-        ste_deviations = np.nanstd(deviations, axis=0) / np.sqrt(
-            np.sum(~np.isnan(deviations), axis=0)
+        mean_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
+            deviations, display_scale
         )
 
         label = build_legend(condition, legend)
@@ -1039,7 +1180,10 @@ def plot_deviation_from_model_at_ecdysis(
         plt.errorbar(
             mean_column_one_values,
             mean_deviations,
-            yerr=ste_deviations,
+            yerr=[
+                mean_deviations - lower_deviations,
+                upper_deviations - mean_deviations,
+            ],
             color=color_palette[i],
             fmt="o",
             capsize=3,
@@ -1065,7 +1209,7 @@ def plot_deviation_from_model_development_percentage(
     control_condition_id: int,
     conditions_to_plot: list,
     percentages: np.ndarray,
-    deviation_as_percentage: bool = True,
+    display_scale: Literal["log", "percent"] = "percent",
     log_scale: tuple[bool, bool] | bool = (True, False),
     colors: list | dict | None = None,
     legend: dict | None = None,
@@ -1075,6 +1219,7 @@ def plot_deviation_from_model_development_percentage(
     remove_outliers_fitting: bool | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
+    deviation_as_percentage: bool | None = None,
 ) -> matplotlib.figure.Figure:
     """
     Plot the deviation from a polynomial model at specified development percentages.
@@ -1082,6 +1227,11 @@ def plot_deviation_from_model_development_percentage(
     A polynomial OLS model is fitted on the control condition at the sampled
     percentages; for each other condition, the mean deviation and its standard error
     are plotted with error bars over the mean X values at those percentages.
+
+    Deviations are log ratios; the mean and standard error are always computed on
+    the log scale. With ``display_scale="percent"`` they are back-transformed with
+    ``(exp(x) - 1) * 100``, so the plotted center is a geometric-mean-based relative
+    deviation and the error bars are asymmetric.
 
     Parameters:
         conditions_struct (list) : List of condition dicts.
@@ -1091,8 +1241,9 @@ def plot_deviation_from_model_development_percentage(
         conditions_to_plot (list) : Ordered condition identifiers.
         percentages (np.ndarray) : Fractional development positions (0–1) at which
             to sample and fit the model.
-        deviation_as_percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        display_scale (str) : Axis scale, ``"percent"`` or ``"log"`` (log ratio).
+            Only affects display; statistics are computed on log ratios.
+            Defaults to ``"percent"``.
         log_scale (tuple[bool, bool] or bool) : Scale spec passed to ``set_scale``.
             Defaults to ``(True, False)``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
@@ -1111,10 +1262,22 @@ def plot_deviation_from_model_development_percentage(
             ``(ax_w, ax_h)`` inches. Defaults to ``None``.
         legend_placement (str or None) : Legend placement passed to ``add_legend``;
             ``None`` hides the legend.  Defaults to ``"best"``.
+        deviation_as_percentage (bool or None) : Deprecated; ``True`` maps to
+            ``display_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
+
+    Raises:
+        ValueError : If ``display_scale`` is not ``"log"`` or ``"percent"``.
     """
+    display_scale = _resolve_deviation_scale(
+        display_scale,
+        "display_scale",
+        "deviation_as_percentage",
+        deviation_as_percentage,
+    )
     _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
 
     if ax_size is not None:
@@ -1130,7 +1293,7 @@ def plot_deviation_from_model_development_percentage(
     y_axis_label = (
         y_axis_label
         if y_axis_label is not None
-        else f"deviation from modeled {column_two}"
+        else _default_deviation_label(column_two, display_scale)
     )
 
     control_condition = conditions_struct[control_condition_id]
@@ -1175,14 +1338,12 @@ def plot_deviation_from_model_development_percentage(
             column_one_values,
             column_two_values,
             control_model,
-            percentage=deviation_as_percentage,
+            deviation_scale="log",
         )
 
         mean_column_one_values = np.nanmean(column_one_values, axis=0)
-        mean_deviations = np.nanmean(deviations, axis=0)
-        # std_deviations = np.nanstd(deviations, axis=0)
-        ste_deviations = np.nanstd(deviations, axis=0) / np.sqrt(
-            np.sum(~np.isnan(deviations), axis=0)
+        mean_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
+            deviations, display_scale
         )
 
         label = build_legend(condition, legend)
@@ -1196,7 +1357,10 @@ def plot_deviation_from_model_development_percentage(
         plt.errorbar(
             mean_column_one_values,
             mean_deviations,
-            yerr=ste_deviations,
+            yerr=[
+                mean_deviations - lower_deviations,
+                upper_deviations - mean_deviations,
+            ],
             fmt="o",
             capsize=3,
             color=color_palette[i],
@@ -1324,9 +1488,10 @@ def compute_deviation_from_model_at_ecdysis(
     control_condition: int,
     output_column_name: str,
     remove_hatch: bool = True,
-    deviations_as_percentage: bool = True,
+    deviation_scale: Literal["log", "percent"] = "log",
     poly_degree: int = 1,
     remove_outliers_fitting: bool | None = None,
+    deviations_as_percentage: bool | None = None,
 ) -> list:
     """
     Compute per-worm deviations from a control-fitted model and store them in conditions_struct.
@@ -1342,17 +1507,30 @@ def compute_deviation_from_model_at_ecdysis(
         output_column_name (str) : Key under which deviations are stored.
         remove_hatch (bool) : If ``True``, drop the hatch column (index 0) before
             fitting and computing deviations.  Defaults to ``True``.
-        deviations_as_percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        deviation_scale (str) : ``"log"`` stores natural-log ratios, the scale on
+            which downstream statistics should run; ``"percent"`` stores
+            ``(exp(r) - 1) * 100``.  Defaults to ``"log"``.
         poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
         remove_outliers_fitting (bool or None) : Removed; ignored with a
             ``FutureWarning`` and will raise an error in a future release.
             Defaults to ``None``.
+        deviations_as_percentage (bool or None) : Deprecated; ``True`` maps to
+            ``deviation_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         list : The modified ``conditions_struct`` with deviations added in place.
+
+    Raises:
+        ValueError : If ``deviation_scale`` is not ``"log"`` or ``"percent"``.
     """
     _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+    deviation_scale = _resolve_deviation_scale(
+        deviation_scale,
+        "deviation_scale",
+        "deviations_as_percentage",
+        deviations_as_percentage,
+    )
 
     control_condition = conditions_struct[control_condition]
     control_column_one_values = control_condition[column_one]
@@ -1382,7 +1560,7 @@ def compute_deviation_from_model_at_ecdysis(
             column_one_values,
             column_two_values,
             control_model,
-            percentage=deviations_as_percentage,
+            deviation_scale=deviation_scale,
         )
         condition[output_column_name] = deviations
 
@@ -1395,9 +1573,10 @@ def compute_deviation_from_each_model_at_ecdysis(
     column_two: str,
     output_column_name: str,
     remove_hatch: bool = True,
-    deviations_as_percentage: bool = True,
+    deviation_scale: Literal["log", "percent"] = "log",
     poly_degree: int = 1,
     remove_outliers_fitting: bool | None = None,
+    deviations_as_percentage: bool | None = None,
 ) -> list:
     """
     Fit a separate model per condition and store each condition's self-deviation.
@@ -1412,17 +1591,30 @@ def compute_deviation_from_each_model_at_ecdysis(
         output_column_name (str) : Key under which deviations are stored.
         remove_hatch (bool) : If ``True``, drop the hatch column (index 0) before
             fitting.  Defaults to ``True``.
-        deviations_as_percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        deviation_scale (str) : ``"log"`` stores natural-log ratios, the scale on
+            which downstream statistics should run; ``"percent"`` stores
+            ``(exp(r) - 1) * 100``.  Defaults to ``"log"``.
         poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
         remove_outliers_fitting (bool or None) : Removed; ignored with a
             ``FutureWarning`` and will raise an error in a future release.
             Defaults to ``None``.
+        deviations_as_percentage (bool or None) : Deprecated; ``True`` maps to
+            ``deviation_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         list : The modified ``conditions_struct`` with deviations added in place.
+
+    Raises:
+        ValueError : If ``deviation_scale`` is not ``"log"`` or ``"percent"``.
     """
     _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+    deviation_scale = _resolve_deviation_scale(
+        deviation_scale,
+        "deviation_scale",
+        "deviations_as_percentage",
+        deviations_as_percentage,
+    )
 
     for condition in conditions_struct:
         column_one_values, column_two_values = (
@@ -1445,7 +1637,7 @@ def compute_deviation_from_each_model_at_ecdysis(
                 column_one_values,
                 column_two_values,
                 model,
-                percentage=deviations_as_percentage,
+                deviation_scale=deviation_scale,
             )
         except Exception as e:
             print(f"Error fitting model for condition {condition['description']}: {e}")
@@ -1462,9 +1654,10 @@ def compute_deviation_from_model_development_percentage(
     control_condition: int,
     percentages: np.ndarray,
     output_column_name: str,
-    deviations_as_percentage: bool = True,
+    deviation_scale: Literal["log", "percent"] = "log",
     poly_degree: int = 1,
     remove_outliers_fitting: bool | None = None,
+    deviations_as_percentage: bool | None = None,
 ) -> list:
     """
     Compute per-worm deviations from a control model sampled at development percentages.
@@ -1480,17 +1673,30 @@ def compute_deviation_from_model_development_percentage(
         percentages (np.ndarray) : Fractional development positions (0–1) at which
             to sample and fit the model.
         output_column_name (str) : Key under which deviations are stored.
-        deviations_as_percentage (bool) : If ``True``, express deviations as percentages.
-            Defaults to ``True``.
+        deviation_scale (str) : ``"log"`` stores natural-log ratios, the scale on
+            which downstream statistics should run; ``"percent"`` stores
+            ``(exp(r) - 1) * 100``.  Defaults to ``"log"``.
         poly_degree (int) : Polynomial degree for model fitting.  Defaults to ``1``.
         remove_outliers_fitting (bool or None) : Removed; ignored with a
             ``FutureWarning`` and will raise an error in a future release.
             Defaults to ``None``.
+        deviations_as_percentage (bool or None) : Deprecated; ``True`` maps to
+            ``deviation_scale="percent"`` and ``False`` to ``"log"``.
+            Defaults to ``None``.
 
     Returns:
         list : The modified ``conditions_struct`` with deviations added in place.
+
+    Raises:
+        ValueError : If ``deviation_scale`` is not ``"log"`` or ``"percent"``.
     """
     _warn_remove_outliers_fitting_removed(remove_outliers_fitting)
+    deviation_scale = _resolve_deviation_scale(
+        deviation_scale,
+        "deviation_scale",
+        "deviations_as_percentage",
+        deviations_as_percentage,
+    )
 
     control_condition = conditions_struct[control_condition]
     control_column_one_values = control_condition[column_one]
@@ -1524,7 +1730,7 @@ def compute_deviation_from_model_development_percentage(
             column_one_values,
             column_two_values,
             control_model,
-            percentage=deviations_as_percentage,
+            deviation_scale=deviation_scale,
         )
         condition[output_column_name] = deviations
 
