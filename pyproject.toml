@@ -45,6 +45,8 @@ dependencies = [
     "microfilm",
     "statsmodels",
     "statannotations",
+    "pymc",
+    "arviz",
 ]
 
 [project.urls]
@@ -68,7 +70,11 @@ build-backend = "setuptools.build_meta"
 testpaths = ["tests"]
 # import the checked-out package, never a stale copy in site-packages
 pythonpath = ["."]
-addopts = ["--import-mode=importlib", "--strict-markers", "-ra"]
+# sampling tests take minutes; run them with `pytest -m slow`
+addopts = ["--import-mode=importlib", "--strict-markers", "-ra", "-m", "not slow"]
+markers = [
+    "slow: fits a model by MCMC sampling; deselected by default",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::FutureWarning",

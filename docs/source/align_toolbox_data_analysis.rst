@@ -16,3 +16,11 @@ growth rate
    :members:
    :undoc-members:
    :show-inheritance:
+
+proportion model
+----------------
+
+.. automodule:: align_toolbox.data_analysis.proportion_model
+   :members:
+   :undoc-members:
+   :show-inheritance:

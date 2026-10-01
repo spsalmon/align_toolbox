@@ -17,6 +17,7 @@ def test_version_is_resolved_from_metadata():
         "align_toolbox.quantification",
         "align_toolbox.classification",
         "align_toolbox.data_analysis",
+        "align_toolbox.data_analysis.proportion_model",
         "align_toolbox.deep_learning",
         "align_toolbox.deep_learning.architectures",
     ],
