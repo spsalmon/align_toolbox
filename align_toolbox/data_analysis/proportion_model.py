@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 from pytensor import tensor as pt
-from xarray import DataTree
+from xarray import Dataset, DataTree
 
 from align_toolbox.plotting.proportions import log_ratio_to_percentage
 
@@ -711,14 +711,12 @@ def _compute_diagnostics(idata: DataTree, var_names: list[str]) -> dict[str, flo
         ]
         return float(reduce(np.array(values)))
 
+    # a plain Dataset is accepted by both arviz 0.x (Python < 3.12) and arviz 1.x
+    posterior = Dataset({name: idata["posterior"][name] for name in var_names})
     return {
-        "max_rhat": extreme(az.rhat(idata, var_names=var_names), np.nanmax),
-        "min_ess_bulk": extreme(
-            az.ess(idata, var_names=var_names, method="bulk"), np.nanmin
-        ),
-        "min_ess_tail": extreme(
-            az.ess(idata, var_names=var_names, method="tail"), np.nanmin
-        ),
+        "max_rhat": extreme(az.rhat(posterior), np.nanmax),
+        "min_ess_bulk": extreme(az.ess(posterior, method="bulk"), np.nanmin),
+        "min_ess_tail": extreme(az.ess(posterior, method="tail"), np.nanmin),
         "n_divergences": int(idata["sample_stats"]["diverging"].values.sum()),
     }
 
