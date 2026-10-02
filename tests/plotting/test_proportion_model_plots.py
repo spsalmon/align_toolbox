@@ -512,8 +512,6 @@ def test_interaction_plot_marks_extrapolated_cells_and_annotates(result):
             within = offsets.loc[cell, "within_cell_range"]
             assert artist.get_marker() == ("o" if within else "D")
     assert not offsets.loc[SHIFTED_CELL, "within_cell_range"]
-    footnotes = [t.get_text() for t in ax.texts if "extrapolated" in t.get_text()]
-    assert footnotes and SHIFTED_CELL in footnotes[0]
     interactions = offsets.dropna(subset=["interaction_mean_percent"])
     annotated = _gid_cells(ax, "interaction|")
     assert annotated == set(interactions.index)
@@ -568,8 +566,3 @@ def test_molt_dispersion_brackets_show_holm_adjusted_p(result, tables):
             t.get_text() for t in ax.texts if t.get_text().startswith("p =")
         )
         assert brackets == sorted(f"p = {p:.2g}" for p in tested["p_holm"])
-    footnote = [t.get_text() for t in fig.axes[0].texts if "Holm" in t.get_text()]
-    family_size = tables.dispersion["family_size"].iloc[0]
-    assert footnote == [
-        f"Brown–Forsythe, Holm-adjusted p (family of {family_size} tests)"
-    ]

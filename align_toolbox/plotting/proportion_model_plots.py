@@ -247,20 +247,6 @@ def _plot_segments(
     return lines
 
 
-def _add_footnote(ax: matplotlib.axes.Axes, text: str) -> None:
-    """Write ``text`` under the x-axis label of ``ax``, so it follows the axes into composed figures."""
-    ax.annotate(
-        text,
-        xy=(0, 0),
-        xycoords=(ax.transAxes, ax.xaxis.label),
-        xytext=(0, -4),
-        textcoords="offset points",
-        ha="left",
-        va="top",
-        fontsize="small",
-    )
-
-
 def _format_log_axis(axis: matplotlib.axis.Axis, plain: bool = False) -> None:
     """
     Label a log axis with readable, non-overlapping ticks for its current range.
@@ -358,9 +344,8 @@ def _add_legend(
     target: matplotlib.axes.Axes | matplotlib.figure.Figure,
     axes: list | np.ndarray,
     placement: str | None,
-    extra: list[tuple[Any, str]] = (),
 ) -> None:
-    """Draw one legend on ``target`` from the labelled artists of ``axes`` plus ``extra`` handles."""
+    """Draw one legend on ``target`` from the labelled artists of ``axes``."""
     handles, labels = [], []
     for panel in axes:
         legend = panel.get_legend()
@@ -370,9 +355,6 @@ def _add_legend(
             if label not in labels:
                 handles.append(handle)
                 labels.append(label)
-    for handle, label in extra:
-        handles.append(handle)
-        labels.append(label)
     if placement is None or handles:
         add_legend(target, placement, handles, labels)
 
@@ -572,7 +554,6 @@ def plot_proportion_scaling(
             gid=f"molts|{cell}",
         )
 
-    extra = []
     if show_reference or show_predictive_band:
         log_x = result.table["log_x"].to_numpy()[np.isin(row_cells, selected)]
         grid = _grid_with_bounds(
@@ -590,7 +571,6 @@ def plot_proportion_scaling(
                 color=band_color,
                 alpha=0.12,
                 linewidth=0,
-                label=f"Reference {prob:.0%} predictive interval",
                 gid="predictive_band",
             )
         if show_reference:
@@ -602,27 +582,18 @@ def plot_proportion_scaling(
                 color=band_color,
                 alpha=0.35,
                 linewidth=0,
-                label=f"Reference fit ({INTERVAL_LABEL})",
                 gid="reference_band",
             )
-            extrapolated = curve["extrapolated"].to_numpy()
             _plot_segments(
                 ax,
                 np.exp(grid),
                 np.exp(curve["mean"]),
-                ~extrapolated,
+                ~curve["extrapolated"].to_numpy(),
                 color=REFERENCE_CURVE_COLOR,
                 linewidth=1.5,
                 zorder=3,
                 gid="reference_curve",
             )
-            if extrapolated.any():
-                extra.append(
-                    (
-                        Line2D([], [], color=REFERENCE_CURVE_COLOR, linestyle="--"),
-                        "Extrapolated beyond reference data",
-                    )
-                )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -630,7 +601,7 @@ def plot_proportion_scaling(
     _format_log_axis(ax.yaxis)
     ax.set_xlabel(x_name if x_label is None else x_label)
     ax.set_ylabel(y_name if y_label is None else y_label)
-    _add_legend(ax, [ax], legend_placement, extra)
+    _add_legend(ax, [ax], legend_placement)
     return _finish(fig, owns_figure, save_name, save_directory, save_format)
 
 
@@ -711,9 +682,8 @@ def plot_offset_curves(
         color=color_of[reference],
         linewidth=1,
         zorder=1,
-        label=f"{label_of[reference]} (reference)",
+        label=label_of[reference],
     )
-    any_dashed = False
     for cell in selected:
         color = color_of[cell]
         cell_log_x = result.table["log_x"].to_numpy()[row_cells == cell]
@@ -735,7 +705,6 @@ def plot_offset_curves(
             gid=f"offset_band|{cell}",
         )
         within = (grid >= reference_lower) & (grid <= reference_upper)
-        any_dashed |= not within.all()
         _plot_segments(
             ax,
             x,
@@ -766,21 +735,6 @@ def plot_offset_curves(
                 gid=f"offset_markers|{cell}",
             )
 
-    extra = []
-    if any_dashed:
-        extra.append(
-            (
-                Line2D([], [], color="0.3", linestyle="--"),
-                "Beyond reference data",
-            )
-        )
-    if markers is not None:
-        extra.append(
-            (
-                Line2D([], [], color="0.3", marker="o", linestyle=""),
-                f"{markers.capitalize()} offset per molt ({INTERVAL_LABEL})",
-            )
-        )
     ax.set_xscale("log")
     _format_log_axis(ax.xaxis)
     ax.set_xlabel(x_name if x_label is None else x_label)
@@ -789,7 +743,7 @@ def plot_offset_curves(
         if y_label is None
         else y_label
     )
-    _add_legend(ax, [ax], legend_placement, extra)
+    _add_legend(ax, [ax], legend_placement)
     return _finish(fig, owns_figure, save_name, save_directory, save_format)
 
 
@@ -818,8 +772,8 @@ def plot_genotype_interaction(
     the x axis and each level of ``line_factor`` is a line, with points slightly
     dodged. Dashed lines with hollow markers show ``expected``, the offset an
     additive model predicts from the main effects. Cells for which ``log_x`` is
-    outside their own observed range are drawn as diamonds and listed in a
-    footnote, since their offset at that size is extrapolated.
+    outside their own observed range are drawn as diamonds, since their offset
+    at that size is extrapolated.
 
     Each line takes the color of its cell at the reference level of
     ``x_factor``, so it matches that genotype in the other plots.
@@ -838,8 +792,8 @@ def plot_genotype_interaction(
             uses all. (default: None)
         colors (dict, list or None): Cell colors keyed by condition id or cell
             label, or one per cell in ``coding.cells`` order. (default: None)
-        labels (dict, list or None): Cell display names, like ``colors``; used in
-            the footnote. (default: None)
+        labels (dict, list or None): Cell display names, like ``colors``.
+            (default: None)
         x_label (str or None): X-axis label; defaults to ``x_factor``.
             (default: None)
         y_label (str or None): Y-axis label. (default: None)
@@ -884,7 +838,6 @@ def plot_genotype_interaction(
     line_levels = coding.levels[line_factor]
     fallback_colors = get_colors(line_levels, None, DEFAULT_PALETTE)
     dodge = 0.08 * (np.arange(len(line_levels)) - (len(line_levels) - 1) / 2)
-    extrapolated_cells = []
 
     ax.axhline(0, color="0.5", linewidth=0.8, zorder=1)
     for k, level in enumerate(line_levels):
@@ -925,8 +878,6 @@ def plot_genotype_interaction(
         )
         for xi, cell, row in points:
             extrapolated = not row["within_cell_range"]
-            if extrapolated:
-                extrapolated_cells.append(cell)
             ax.errorbar(
                 xi,
                 row["offset_mean_percent"],
@@ -969,30 +920,7 @@ def plot_genotype_interaction(
         if y_label is None
         else y_label
     )
-    extra = [
-        (
-            Line2D([], [], color="0.3", linestyle="--", marker="o", mfc="white"),
-            "Expected without interaction",
-        )
-    ]
-    if extrapolated_cells:
-        extra.append(
-            (
-                Line2D([], [], color="0.3", marker="D", linestyle=""),
-                "Extrapolated for this genotype",
-            )
-        )
-        _add_footnote(
-            ax,
-            "Diamonds: the offset at this size is extrapolated for "
-            + "; ".join(label_of[c] for c in extrapolated_cells)
-            + ".",
-        )
-    if annotate_interaction:
-        extra.append(
-            (Line2D([], [], linestyle=""), f"Labels: interaction (%, {INTERVAL_LABEL})")
-        )
-    _add_legend(ax, [ax], legend_placement, extra)
+    _add_legend(ax, [ax], legend_placement)
     return _finish(fig, owns_figure, save_name, save_directory, save_format)
 
 
@@ -1094,11 +1022,7 @@ def plot_variance_components(
         if y_label is None
         else y_label
     )
-    extra = [
-        (Line2D([], [], color="0.3", marker="o", linestyle=""), "Between worms (τ)"),
-        (Line2D([], [], color="0.3", marker="s", linestyle=""), "Within worm (σ)"),
-    ]
-    _add_legend(ratio_ax, [ratio_ax], legend_placement, extra)
+    _add_legend(ratio_ax, [ratio_ax], legend_placement)
 
     if show_repeatability:
         repeatability_ax = axes[1]
@@ -1349,7 +1273,6 @@ def plot_penetrance(
                 x, center, yerr=errors, fmt="none", ecolor="black", capsize=2, gid=gid
             )
 
-    any_extrapolated = False
     for i, cell in enumerate(selected):
         row = table.loc[cell]
         color = color_of[cell]
@@ -1410,7 +1333,6 @@ def plot_penetrance(
             )
             top = row["outside_upper"]
         if row["extrapolated_fraction"] > 0:
-            any_extrapolated = True
             ax.annotate(
                 f"{row['extrapolated_fraction']:.0%}\nextrap.",
                 xy=(i, top),
@@ -1442,24 +1364,7 @@ def plot_penetrance(
         if y_label is None
         else y_label
     )
-    extra = [
-        (
-            Line2D([], [], color="0.3", linestyle="--"),
-            f"Expected for reference ({1 - prob:.0%})",
-        )
-    ]
-    if split_direction:
-        extra = [
-            (Patch(facecolor="0.6", alpha=0.45, hatch="///", edgecolor="0.6"), "Below"),
-            (Patch(facecolor="0.6", edgecolor="0.6"), "Above"),
-        ] + extra
-    if any_extrapolated:
-        _add_footnote(
-            ax,
-            "extrap.: share of the genotype's observations beyond the reference "
-            "size range",
-        )
-    _add_legend(ax, [ax], legend_placement, extra)
+    _add_legend(ax, [ax], legend_placement)
     return _finish(fig, owns_figure, save_name, save_directory, save_format)
 
 
@@ -1627,7 +1532,6 @@ def plot_linearity_check(
         100 * threshold,
         color="0.9",
         zorder=0,
-        label=f"±{threshold:.0%} threshold",
         gid="threshold",
     )
     ax.axhline(0, color="0.5", linewidth=0.8, zorder=1)
@@ -1823,11 +1727,7 @@ def plot_posterior_predictive_check(
             ("ECDF" if kind == "ecdf" else "Density") if y_label is None else y_label
         )
 
-    extra = [
-        (Line2D([], [], color=REPLICATE_COLOR, linewidth=1), "Replicated (per draw)"),
-        (Line2D([], [], color="0.15", linewidth=2), "Observed (cell color)"),
-    ]
-    _add_legend(fig if owns_figure else axes[0], axes, legend_placement, extra)
+    _add_legend(fig if owns_figure else axes[0], axes, legend_placement)
     return _finish(fig, owns_figure, save_name, save_directory, save_format)
 
 
@@ -1899,7 +1799,6 @@ def plot_experiment_consistency(
     )
 
     ax.axvline(null_value, color="0.5", linewidth=0.8, zorder=1)
-    extra = []
     if pooled is not None:
         summary = pooled.summary()
         pooled_rows = summary[summary["parameter"].isin(names)]
@@ -1923,7 +1822,6 @@ def plot_experiment_consistency(
                 zorder=1,
                 gid=f"pooled_mean|{name}",
             )
-        extra.append((Patch(facecolor="0.85"), f"Pooled fit ({INTERVAL_LABEL})"))
 
     for k, experiment in enumerate(experiments):
         sub = rows[rows["experiment"] == experiment]
@@ -1948,7 +1846,7 @@ def plot_experiment_consistency(
     ax.set_xlabel(default_label if x_label is None else x_label)
     if y_label is not None:
         ax.set_ylabel(y_label)
-    _add_legend(ax, [ax], legend_placement, extra)
+    _add_legend(ax, [ax], legend_placement)
     return _finish(fig, owns_figure, save_name, save_directory, save_format)
 
 
@@ -1976,8 +1874,7 @@ def plot_molt_dispersion(
     Each molt is a panel of violins of the posterior mean marginal residuals from
     ``residuals``, in percent. Brackets show the Holm-adjusted p-values
     (``p_holm``) of the Brown–Forsythe tests from ``molt_dispersion_tests``;
-    tests that were not run get no bracket. The footnote states the test and the
-    size of the Holm family.
+    tests that were not run get no bracket.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
@@ -2057,12 +1954,6 @@ def plot_molt_dispersion(
     )
     axes[0].set_ylabel("Residual around own curve (%)" if y_label is None else y_label)
 
-    family_sizes = sorted(int(n) for n in tests["family_size"].unique() if n > 0)
-    if len(family_sizes) == 1:
-        family_text = f"family of {family_sizes[0]} tests"
-    else:
-        family_text = f"families of {', '.join(map(str, family_sizes))} tests"
-    _add_footnote(axes[0], f"Brown–Forsythe, Holm-adjusted p ({family_text})")
     extra = [(Patch(facecolor=color_of[cell]), label_of[cell]) for cell in plot_cells]
     for panel in axes:
         legend = panel.get_legend()
