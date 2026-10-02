@@ -27,12 +27,7 @@ from align_toolbox.data_analysis.proportion_model import (
 
 from .boxplots import _plot_violinplot
 from .proportions import log_ratio_to_percentage
-from .utils_plotting import (
-    add_legend,
-    create_fixed_ax_sized_fig,
-    get_colors,
-    save_figure,
-)
+from .utils_plotting import add_legend, create_fixed_ax_sized_fig, get_colors
 
 DEFAULT_PALETTE = "colorblind"
 REFERENCE_COLOR = "grey"
@@ -362,13 +357,8 @@ def _add_legend(
 def _finish(
     fig: matplotlib.figure.Figure,
     owns_figure: bool,
-    save_name: str | None,
-    save_directory: str,
-    save_format: str,
 ) -> matplotlib.figure.Figure:
-    """Save the figure if requested and show it if it was created here."""
-    if save_name is not None:
-        save_figure(fig, save_name, save_directory, format=save_format)
+    """Show the figure if it was created here and return it."""
     if owns_figure:
         plt.show()
     return fig
@@ -462,9 +452,6 @@ def plot_proportion_scaling(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot each genotype's per-molt geometric means of Y against X on log–log axes, with the reference fit.
@@ -504,10 +491,6 @@ def plot_proportion_scaling(
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend.
             (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -602,7 +585,7 @@ def plot_proportion_scaling(
     ax.set_xlabel(x_name if x_label is None else x_label)
     ax.set_ylabel(y_name if y_label is None else y_label)
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_offset_curves(
@@ -617,9 +600,6 @@ def plot_offset_curves(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot each genotype's size-matched offset from the reference cell, in percent, against body size.
@@ -656,10 +636,6 @@ def plot_offset_curves(
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend.
             (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -760,7 +736,7 @@ def plot_offset_curves(
         else y_label
     )
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_genotype_interaction(
@@ -777,9 +753,6 @@ def plot_genotype_interaction(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot an interaction plot of the size-matched offsets of a two-factor design.
@@ -820,10 +793,6 @@ def plot_genotype_interaction(
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend.
             (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -937,7 +906,7 @@ def plot_genotype_interaction(
         else y_label
     )
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 # VARIANCE AND INDIVIDUALS
@@ -954,9 +923,6 @@ def plot_variance_components(
     ax: matplotlib.axes.Axes | np.ndarray | list | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot each genotype's between-worm and within-worm SD relative to the reference cell.
@@ -984,10 +950,6 @@ def plot_variance_components(
             new figure. (default: None)
         legend_placement (str or None): Placement passed to ``add_legend`` on the
             ratio panel; ``None`` hides the legend. (default: "best")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1071,7 +1033,7 @@ def plot_variance_components(
         if x_label is not None:
             repeatability_ax.set_xlabel(x_label)
         repeatability_ax.set_ylabel(f"Repeatability ({INTERVAL_LABEL})")
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_individual_consistency(
@@ -1089,9 +1051,6 @@ def plot_individual_consistency(
     ax: matplotlib.axes.Axes | np.ndarray | list | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = None,
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Scatter each worm's deviation at one molt against another, one panel per genotype.
@@ -1126,10 +1085,6 @@ def plot_individual_consistency(
             new figure; keep it square for equal axes. (default: None)
         legend_placement (str or None): Placement of a cell legend passed to
             ``add_legend``; ``None`` relies on the panel titles. (default: None)
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1204,7 +1159,7 @@ def plot_individual_consistency(
         panel.set_ylim(limits)
 
     _add_legend(fig if owns_figure else axes[0], axes, legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_penetrance(
@@ -1222,9 +1177,6 @@ def plot_penetrance(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot, per genotype, the fraction of worms outside the reference cell's predictive interval.
@@ -1260,10 +1212,6 @@ def plot_penetrance(
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend.
             (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1377,7 +1325,7 @@ def plot_penetrance(
         else y_label
     )
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 # SUMMARIES
@@ -1394,9 +1342,6 @@ def plot_effects_forest(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = None,
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot ``summary`` rows as a forest plot of posterior means with their intervals.
@@ -1424,10 +1369,6 @@ def plot_effects_forest(
             figure; the height defaults to 0.3 inch per row. (default: None)
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend. (default: None)
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1471,7 +1412,7 @@ def plot_effects_forest(
     if y_label is not None:
         ax.set_ylabel(y_label)
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_linearity_check(
@@ -1482,9 +1423,6 @@ def plot_linearity_check(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "best",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot the reference cell's mean residual per molt for the line and spline reference fits.
@@ -1507,10 +1445,6 @@ def plot_linearity_check(
             figure. (default: None)
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend. (default: "best")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1574,7 +1508,7 @@ def plot_linearity_check(
         f"Reference residual (%, {INTERVAL_LABEL})" if y_label is None else y_label
     )
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def _draw_distribution(
@@ -1613,9 +1547,6 @@ def plot_posterior_predictive_check(
     ax: matplotlib.axes.Axes | np.ndarray | list | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Compare each genotype's residual distribution with posterior predictive replicates.
@@ -1652,10 +1583,6 @@ def plot_posterior_predictive_check(
             new figure. (default: None)
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend. (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1740,7 +1667,7 @@ def plot_posterior_predictive_check(
         )
 
     _add_legend(fig if owns_figure else axes[0], axes, legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_experiment_consistency(
@@ -1754,9 +1681,6 @@ def plot_experiment_consistency(
     ax: matplotlib.axes.Axes | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot each parameter's estimate per experiment, to check that effects replicate.
@@ -1787,10 +1711,6 @@ def plot_experiment_consistency(
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend.
             (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1859,7 +1779,7 @@ def plot_experiment_consistency(
     if y_label is not None:
         ax.set_ylabel(y_label)
     _add_legend(ax, [ax], legend_placement)
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
 
 
 def plot_molt_dispersion(
@@ -1876,9 +1796,6 @@ def plot_molt_dispersion(
     ax: matplotlib.axes.Axes | np.ndarray | list | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
-    save_name: str | None = None,
-    save_directory: str = ".",
-    save_format: str = "svg",
 ) -> matplotlib.figure.Figure:
     """
     Plot, molt by molt, each genotype's residuals around its own curve with dispersion tests.
@@ -1912,10 +1829,6 @@ def plot_molt_dispersion(
             new figure. (default: None)
         legend_placement (str or None): Placement passed to ``add_legend``;
             ``None`` hides the legend. (default: "outside right")
-        save_name (str or None): If given, save the figure under this name with
-            ``save_figure``. (default: None)
-        save_directory (str): Directory of the saved figure. (default: ".")
-        save_format (str): File format of the saved figure. (default: "svg")
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
@@ -1977,4 +1890,4 @@ def plot_molt_dispersion(
         [handle for handle, _ in extra],
         [label for _, label in extra],
     )
-    return _finish(fig, owns_figure, save_name, save_directory, save_format)
+    return _finish(fig, owns_figure)
