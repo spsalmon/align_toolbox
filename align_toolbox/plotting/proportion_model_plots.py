@@ -1173,12 +1173,8 @@ def plot_individual_consistency(
             gid=f"annotation|{cell}",
         )
         panel.set_title(label_of[cell], fontsize="medium")
-        panel.set_xlabel(
-            f"Deviation at molt {molt_a} (%)" if x_label is None else x_label
-        )
-        panel.set_ylabel(
-            f"Deviation at molt {molt_b} (%)" if y_label is None else y_label
-        )
+        panel.set_xlabel(f"Deviation at M{molt_a} (%)" if x_label is None else x_label)
+        panel.set_ylabel(f"Deviation at M{molt_b} (%)" if y_label is None else y_label)
 
     if not np.isfinite(lowest):
         lowest, highest = -1.0, 1.0
@@ -1552,7 +1548,7 @@ def plot_linearity_check(
             label=name,
             gid=f"misfit|{name}",
         )
-    ax.set_xticks(range(len(molts)), [str(m) for m in molts])
+    ax.set_xticks(range(len(molts)), [f"M{m}" for m in molts])
     ax.set_xlim(-0.5, len(molts) - 0.5)
     ax.set_title(
         f"Reference shape used: {result.reference_shape_used}", fontsize="medium"
@@ -1943,7 +1939,7 @@ def plot_molt_dispersion(
         "residual",
         [color_of[cell] for cell in plot_cells],
         axes if len(axes) > 1 else axes[0],
-        titles=[f"Molt {molt}" for molt in molts],
+        titles=[f"M{molt}" for molt in molts],
         share_y_axis=False,
         plot_significance=True,
         significance_pairs=None,
