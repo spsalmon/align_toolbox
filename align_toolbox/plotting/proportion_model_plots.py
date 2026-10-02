@@ -573,7 +573,7 @@ def plot_proportion_scaling(
                 np.exp(curve["mean"]),
                 ~curve["extrapolated"].to_numpy(),
                 color=REFERENCE_CURVE_COLOR,
-                linewidth=1.5,
+                linewidth=2,
                 zorder=3,
                 gid="reference_curve",
             )
@@ -659,7 +659,7 @@ def plot_offset_curves(
     ax.axhline(
         0,
         color=color_of[reference],
-        linewidth=1,
+        linewidth=2,
         zorder=1,
         label=label_of[reference],
     )
@@ -703,7 +703,7 @@ def plot_offset_curves(
             within,
             label=label_of[cell],
             color=color,
-            linewidth=1.5,
+            linewidth=2,
             gid=f"offset|{cell}",
         )
     if markers is not None:
@@ -856,7 +856,7 @@ def plot_genotype_interaction(
             x,
             rows["offset_mean_percent"].to_numpy(dtype=float),
             color=color,
-            linewidth=1.5,
+            linewidth=2,
             zorder=3,
             label=f"{line_factor}={level}",
             gid=f"line|{level}",
