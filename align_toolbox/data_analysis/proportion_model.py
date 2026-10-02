@@ -10,6 +10,9 @@ import pandas as pd
 import pymc as pm
 from pytensor import tensor as pt
 from scipy.interpolate import BSpline
+from scipy.sparse import csr_matrix
+from scipy.stats import kurtosis, levene, norm
+from statsmodels.stats.multitest import multipletests
 from xarray import Dataset, DataTree
 
 from align_toolbox.plotting.proportions import log_ratio_to_percentage
@@ -20,6 +23,8 @@ __all__ = [
     "SplineBasis",
     "build_genotype_coding",
     "build_proportion_table",
+    "compare_experiments",
+    "fit_per_experiment",
     "fit_proportion_model",
 ]
 
@@ -44,6 +49,10 @@ NU_PRIOR_ALPHA = 2.0
 NU_PRIOR_BETA = 0.1
 
 SPLINE_DEGREE = 3
+
+# robust SD = MAD_SCALE * median absolute deviation, for normal data
+MAD_SCALE = 1.4826
+OUTLIER_ROBUST_SDS = 3.0
 
 LINEAR_TARGET_ACCEPT = 0.9
 SPLINE_TARGET_ACCEPT = 0.99
@@ -619,17 +628,18 @@ class ProportionModelResult:
     spline_misfit: pd.DataFrame | None = None
     linearity_threshold: float | None = None
 
-    def _draws(self, name: str) -> np.ndarray:
-        """Posterior draws of ``name`` with chains and draws flattened to axis 0."""
+    def _draws(self, name: str, index: np.ndarray | None = None) -> np.ndarray:
+        """Posterior draws of ``name`` with chains and draws flattened to axis 0, optionally subset by ``index``."""
         values = self.idata["posterior"][name].values
-        return values.reshape(-1, *values.shape[2:])
+        values = values.reshape(-1, *values.shape[2:])
+        return values if index is None else values[index]
 
     def _has(self, name: str) -> bool:
         return name in self.idata["posterior"].data_vars
 
-    def _scale_draws(self, name: str) -> np.ndarray:
+    def _scale_draws(self, name: str, index: np.ndarray | None = None) -> np.ndarray:
         """Draws of ``tau`` or ``sigma`` of shape ``(n_draws, n_cells)``."""
-        draws = self._draws(name)
+        draws = self._draws(name, index)
         if draws.ndim == 1:
             draws = np.repeat(draws[:, np.newaxis], len(self.coding.cells), axis=1)
         return draws
@@ -791,24 +801,31 @@ class ProportionModelResult:
         coords = pd.Index(self.idata["posterior"][variable].coords[dim].values)
         return coords.get_indexer(values)
 
-    def _reference_curve_draws(self, log_x: np.ndarray) -> np.ndarray:
+    def _reference_curve_draws(
+        self, log_x: np.ndarray, index: np.ndarray | None = None
+    ) -> np.ndarray:
         """Draws of ``f(log_x)`` for the average experiment, of shape ``(n_draws, n_points)``."""
         x_centered = np.asarray(log_x, dtype=float) - self.x_ref
         curve = (
-            self._draws("a")[:, np.newaxis]
-            + self._draws("b")[:, np.newaxis] * x_centered[np.newaxis, :]
+            self._draws("a", index)[:, np.newaxis]
+            + self._draws("b", index)[:, np.newaxis] * x_centered[np.newaxis, :]
         )
         if self.spline_basis is not None:
-            weights = self._draws("sd_s")[:, np.newaxis] * self._draws("spline_z")
+            weights = self._draws("sd_s", index)[:, np.newaxis] * self._draws(
+                "spline_z", index
+            )
             curve = curve + weights @ self.spline_basis.design(log_x).T
         return curve
 
     def _marginal_fitted_draws(
-        self, rows: pd.DataFrame, genotype_effects: bool
+        self,
+        rows: pd.DataFrame,
+        genotype_effects: bool,
+        index: np.ndarray | None = None,
     ) -> np.ndarray:
         """Draws of the fitted value of ``rows`` without worm effects, of shape ``(n_draws, n_rows)``."""
         log_x = rows["log_x"].to_numpy(dtype=float)
-        fitted = self._reference_curve_draws(log_x)
+        fitted = self._reference_curve_draws(log_x, index)
         if genotype_effects and self.coding.effect_names:
             design = self.coding.design_matrix(
                 sorted(rows["condition_id"].unique())
@@ -817,14 +834,16 @@ class ProportionModelResult:
             x_centered = log_x - self.x_ref
             fitted = (
                 fitted
-                + self._draws("beta") @ design.T
-                + self._draws("gamma") @ (design * x_centered[:, np.newaxis]).T
+                + self._draws("beta", index) @ design.T
+                + self._draws("gamma", index) @ (design * x_centered[:, np.newaxis]).T
             )
         if self._has("experiment_effect"):
             experiment_index = self._index_of(
                 "experiment_effect", "experiment", rows["experiment"]
             )
-            fitted = fitted + self._draws("experiment_effect")[:, experiment_index]
+            fitted = (
+                fitted + self._draws("experiment_effect", index)[:, experiment_index]
+            )
         return fitted
 
     def reference_residuals_by_molt(self) -> pd.DataFrame:
@@ -989,6 +1008,738 @@ class ProportionModelResult:
                 "upper": np.quantile(predicted, 1 - tail, axis=0),
             }
         )
+
+    # PUBLICATION ANALYSES
+
+    def _draw_index(self, n_draws: int | None) -> np.ndarray | None:
+        """Evenly spaced flattened draw indices, or ``None`` for all draws."""
+        total = len(self._draws("a"))
+        if n_draws is None or n_draws >= total:
+            return None
+        if n_draws < 1:
+            raise ValueError(f"`n_draws` must be at least 1, got {n_draws}.")
+        return np.linspace(0, total - 1, n_draws).round().astype(int)
+
+    def _rng(self, random_seed: int | None) -> np.random.Generator:
+        return np.random.default_rng(
+            self.random_seed if random_seed is None else random_seed
+        )
+
+    def _row_cells(self) -> pd.Series:
+        """Genotype cell label of each table row."""
+        return self.table["condition_id"].map(self.coding.cell_of_condition)
+
+    def _reference_range(self) -> tuple[float, float]:
+        """Min and max ``log_x`` of the reference cell."""
+        reference_log_x = self.table.loc[self._reference_mask(), "log_x"]
+        return float(reference_log_x.min()), float(reference_log_x.max())
+
+    def _offset_draws(
+        self,
+        effect_vector: np.ndarray,
+        log_x: np.ndarray,
+        index: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Draws of ``sum_k d_k * (beta_k + gamma_k * xc)``, of shape ``(n_draws, n_points)``."""
+        x_centered = np.asarray(log_x, dtype=float) - self.x_ref
+        if not self.coding.effect_names:
+            return np.zeros((len(self._draws("a", index)), len(x_centered)))
+        intercept = self._draws("beta", index) @ effect_vector
+        slope = self._draws("gamma", index) @ effect_vector
+        return intercept[:, np.newaxis] + slope[:, np.newaxis] * x_centered
+
+    def cell_offsets(
+        self,
+        log_x: float | None = None,
+        prob: float = 0.95,
+        n_draws: int | None = None,
+    ) -> pd.DataFrame:
+        """
+        Compute each genotype cell's size-matched offset from the reference cell, split into main effects and interaction.
+
+        ``offset`` is ``sum_k D_k * (beta_k + gamma_k * xc)`` over all the cell's
+        active effects at ``log_x``; ``expected`` keeps only the main effects, i.e.
+        the offset an additive model would predict from the single-factor cells,
+        and ``interaction`` is ``offset - expected``. All three are computed per
+        posterior draw. ``interaction`` is NaN for cells with no interaction term
+        (the reference, single-factor cells, and every cell under single-factor
+        coding, where ``expected`` equals ``offset``).
+
+        Parameters:
+            log_x (float or None): Natural-log X at which to evaluate the offsets;
+                ``None`` uses ``x_ref``. (default: None)
+            prob (float): Probability mass of the equal-tailed intervals.
+                (default: 0.95)
+            n_draws (int or None): Number of evenly spaced posterior draws to use;
+                ``None`` uses all. (default: None)
+
+        Returns:
+            pd.DataFrame: One row per cell with ``cell``, ``log_x``, the
+                ``mean``, ``lower`` and ``upper`` of ``offset``, ``expected`` and
+                ``interaction`` (natural-log units, e.g. ``offset_mean``) and their
+                ``_percent`` versions, ``interaction_prob_positive`` (posterior
+                probability that the interaction is positive),
+                ``within_cell_range`` and ``within_reference_range`` (whether
+                ``log_x`` lies inside the cell's or the reference cell's observed
+                min–max ``log_x``; ``False`` means the offset is extrapolated).
+
+        Raises:
+            ValueError: If ``prob`` is not strictly between 0 and 1.
+        """
+        _check_prob(prob)
+        log_x = self.x_ref if log_x is None else float(log_x)
+        index = self._draw_index(n_draws)
+        row_cells = self._row_cells().to_numpy()
+        reference_lower, reference_upper = self._reference_range()
+        is_main = np.array(
+            [":" not in e for e in self.coding.effect_names], dtype=float
+        )
+
+        rows = []
+        for cell in self.coding.cells:
+            d = self.coding.effect_vector(self.coding.resolve_cell(cell))
+            offset = self._offset_draws(d, [log_x], index)[:, 0]
+            expected = self._offset_draws(d * is_main, [log_x], index)[:, 0]
+            has_interaction = bool(np.any(d * (1 - is_main)))
+            interaction = (
+                offset - expected if has_interaction else np.full_like(offset, np.nan)
+            )
+            cell_log_x = self.table["log_x"].to_numpy()[row_cells == cell]
+            row = {"cell": cell, "log_x": log_x}
+            row.update(_summarize_draws(offset, prob, "offset", percent=True))
+            row.update(_summarize_draws(expected, prob, "expected", percent=True))
+            row.update(_summarize_draws(interaction, prob, "interaction", percent=True))
+            row["interaction_prob_positive"] = (
+                float(np.mean(interaction > 0)) if has_interaction else np.nan
+            )
+            row["within_cell_range"] = bool(
+                cell_log_x.min() <= log_x <= cell_log_x.max()
+            )
+            row["within_reference_range"] = bool(
+                reference_lower <= log_x <= reference_upper
+            )
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def molt_positions(
+        self, prob: float = 0.95, n_draws: int | None = None
+    ) -> pd.DataFrame:
+        """
+        Summarize where each genotype cell sits at each molt, in the data and in the model.
+
+        ``model_offset`` is the cell's offset (see ``cell_offsets``) at the cell's
+        mean ``log_x`` for that molt. ``observed_offset`` is the mean over the
+        cell × molt observations of ``log_y - f(log_x) - e_exp``, the data's own
+        deviation from the reference curve; its interval comes from the posterior
+        draws of ``f`` and the experiment effects. Because genotype effects are
+        linear in ``log_x``, the two agree when the model fits, up to the
+        average worm intercept and residual of the group.
+
+        Parameters:
+            prob (float): Probability mass of the equal-tailed intervals.
+                (default: 0.95)
+            n_draws (int or None): Number of evenly spaced posterior draws to use;
+                ``None`` uses all. (default: None)
+
+        Returns:
+            pd.DataFrame: One row per cell × molt with ``cell``, ``molt``, ``n``,
+                ``log_x_mean``, ``log_x_sd``, ``log_y_mean``, ``log_y_sd`` (raw data,
+                SD with ``ddof=1``), the ``mean``, ``lower`` and ``upper`` of
+                ``model_offset`` and ``observed_offset`` (natural-log units) with
+                their ``_percent`` versions, and ``extrapolated`` (``True`` if the
+                mean ``log_x`` is below or above the reference cell's overall
+                ``log_x`` range; gaps between reference molts do not count).
+
+        Raises:
+            ValueError: If ``prob`` is not strictly between 0 and 1.
+        """
+        _check_prob(prob)
+        index = self._draw_index(n_draws)
+        row_cells = self._row_cells().to_numpy()
+        molts = self.table["molt"].to_numpy()
+        log_x, log_y = (self.table[c].to_numpy(dtype=float) for c in ("log_x", "log_y"))
+        deviation = log_y - self._marginal_fitted_draws(
+            self.table, genotype_effects=False, index=index
+        )
+        reference_lower, reference_upper = self._reference_range()
+
+        rows = []
+        for cell in self.coding.cells:
+            d = self.coding.effect_vector(self.coding.resolve_cell(cell))
+            for molt in sorted(np.unique(molts[row_cells == cell])):
+                in_group = (row_cells == cell) & (molts == molt)
+                mean_log_x = float(log_x[in_group].mean())
+                row = {
+                    "cell": cell,
+                    "molt": molt,
+                    "n": int(in_group.sum()),
+                    "log_x_mean": mean_log_x,
+                    "log_x_sd": _sd(log_x[in_group]),
+                    "log_y_mean": float(log_y[in_group].mean()),
+                    "log_y_sd": _sd(log_y[in_group]),
+                }
+                model = self._offset_draws(d, [mean_log_x], index)[:, 0]
+                observed = deviation[:, in_group].mean(axis=1)
+                row.update(_summarize_draws(model, prob, "model_offset", percent=True))
+                row.update(
+                    _summarize_draws(observed, prob, "observed_offset", percent=True)
+                )
+                row["extrapolated"] = bool(
+                    mean_log_x < reference_lower or mean_log_x > reference_upper
+                )
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+    def _residual_sd_factor(self, index: np.ndarray | None) -> np.ndarray:
+        """Per-draw factor from ``sigma`` to the residual SD; NaN where ``nu <= 2``."""
+        if not self._has("nu"):
+            return np.ones(len(self._draws("a", index)))
+        nu = self._draws("nu", index)
+        factor = np.full_like(nu, np.nan)
+        defined = nu > 2
+        factor[defined] = np.sqrt(nu[defined] / (nu[defined] - 2))
+        return factor
+
+    def repeatability(
+        self, prob: float = 0.95, n_draws: int | None = None
+    ) -> pd.DataFrame:
+        """
+        Compute the repeatability of each genotype cell, the share of variance between worms.
+
+        ``R = tau² / (tau² + sigma_sd²)`` per posterior draw, where ``sigma_sd`` is
+        the SD of the residual distribution: ``sigma`` for a normal likelihood and
+        ``sigma * sqrt(nu / (nu - 2))`` for a Student-t one. Student-t draws with
+        ``nu <= 2`` have no finite SD and are excluded; their fraction is
+        reported. The ratio to the reference cell is also taken per draw. With
+        shared variances (``group_variances=False``) every cell has the same
+        ``R``, so a single row labelled ``"shared"`` is returned and the ratio
+        columns are NaN.
+
+        Parameters:
+            prob (float): Probability mass of the equal-tailed intervals.
+                (default: 0.95)
+            n_draws (int or None): Number of evenly spaced posterior draws to use;
+                ``None`` uses all. (default: None)
+
+        Returns:
+            pd.DataFrame: One row per cell with ``cell``, ``repeatability_mean``,
+                ``repeatability_lower``, ``repeatability_upper``, the same for
+                ``repeatability_ratio`` (relative to the reference cell), and
+                ``sd_undefined_fraction`` (fraction of draws with ``nu <= 2``).
+
+        Raises:
+            ValueError: If ``prob`` is not strictly between 0 and 1.
+        """
+        _check_prob(prob)
+        index = self._draw_index(n_draws)
+        factor = self._residual_sd_factor(index)
+        tau = self._scale_draws("tau", index)
+        residual_sd = self._scale_draws("sigma", index) * factor[:, np.newaxis]
+        ratio = tau**2 / (tau**2 + residual_sd**2)
+        undefined_fraction = float(np.mean(np.isnan(factor)))
+
+        cells = self.coding.cells if self.group_variances else ["shared"]
+        rows = []
+        for k, cell in enumerate(cells):
+            row = {"cell": cell}
+            row.update(_summarize_draws(ratio[:, k], prob, "repeatability"))
+            relative = (
+                ratio[:, k] / ratio[:, 0]
+                if self.group_variances
+                else np.full(len(ratio), np.nan)
+            )
+            row.update(_summarize_draws(relative, prob, "repeatability_ratio"))
+            row["sd_undefined_fraction"] = undefined_fraction
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def worm_deviations(
+        self,
+        relative_to: Literal["own", "reference"] = "own",
+        n_draws: int | None = None,
+    ) -> pd.DataFrame:
+        """
+        Tabulate the posterior mean marginal deviation of every worm at every molt.
+
+        Deviations exclude the worm intercepts. With ``relative_to="own"`` they are
+        residuals around the worm's genotype curve (``f`` plus its
+        ``beta + gamma * xc`` and the experiment effect), as in ``residuals``; with
+        ``"reference"`` they are deviations from the reference curve ``f`` plus
+        the experiment effect, i.e. they include the genotype's offset.
+
+        Parameters:
+            relative_to (str): ``"own"`` or ``"reference"``. (default: "own")
+            n_draws (int or None): Number of evenly spaced posterior draws to use;
+                ``None`` uses all. (default: None)
+
+        Returns:
+            pd.DataFrame: One row per worm with ``worm_id``, ``condition_id``,
+                ``experiment`` and one column per molt (named by the molt index)
+                holding the deviation in natural-log units, NaN where the worm has
+                no observation at that molt.
+
+        Raises:
+            ValueError: If ``relative_to`` is not ``"own"`` or ``"reference"``.
+        """
+        if relative_to not in ("own", "reference"):
+            raise ValueError(
+                f"`relative_to` must be 'own' or 'reference', got {relative_to!r}."
+            )
+        fitted = self._marginal_fitted_draws(
+            self.table,
+            genotype_effects=relative_to == "own",
+            index=self._draw_index(n_draws),
+        )
+        deviation = self.table.assign(
+            deviation=self.table["log_y"].to_numpy() - fitted.mean(axis=0)
+        )
+        wide = deviation.pivot(index="worm_id", columns="molt", values="deviation")
+        wide.columns.name = None
+        worms = self.table.drop_duplicates("worm_id")[
+            ["worm_id", "condition_id", "experiment"]
+        ]
+        return worms.merge(wide, left_on="worm_id", right_index=True).reset_index(
+            drop=True
+        )
+
+    def penetrance(
+        self,
+        prob: float = 0.95,
+        random_seed: int | None = None,
+        n_draws: int | None = None,
+        n_simulations: int = 2000,
+        interval_prob: float = 0.95,
+    ) -> pd.DataFrame:
+        """
+        Estimate the fraction of each cell's worms that lie outside the reference cell's range of worms.
+
+        For each worm and posterior draw, the worm's deviation is the mean over its
+        ``n_i`` observed molts of ``log_y - f(log_x) - e_exp``. It is compared with
+        the central ``prob`` interval of the same statistic for a new
+        reference-cell worm observed ``n_i`` times: a worm intercept
+        ``Normal(0, tau_ref)`` plus the mean of ``n_i`` residuals
+        ``Normal(0, sigma_ref)`` (analytic) or ``StudentT(nu, 0, sigma_ref)``
+        (``n_simulations`` simulations per draw). Each worm is classified per draw
+        as below, within or above that interval, and the fractions of the cell's
+        worms below, above and outside are summarized over draws. For the
+        reference cell the outside fraction should be close to ``1 - prob``, which
+        checks the calibration.
+
+        Deviations at ``log_x`` beyond the reference cell's range rely on the
+        extrapolated reference curve; ``extrapolated_fraction`` reports how many
+        of the cell's observations are affected.
+
+        Parameters:
+            prob (float): Probability mass of the reference interval.
+                (default: 0.95)
+            random_seed (int or None): Seed for the Student-t simulations;
+                ``None`` reuses the sampling seed. (default: None)
+            n_draws (int or None): Number of evenly spaced posterior draws to use;
+                ``None`` uses all. (default: None)
+            n_simulations (int): Simulated reference worms per draw and number of
+                molts, for a Student-t likelihood. (default: 2000)
+            interval_prob (float): Probability mass of the equal-tailed
+                intervals of the fractions over draws. (default: 0.95)
+
+        Returns:
+            pd.DataFrame: One row per cell with ``cell``, ``n_worms``,
+                ``n_observations``, the ``mean``, ``lower`` and ``upper`` (over
+                draws) of ``below``, ``above`` and ``outside``
+                (fractions of worms, e.g. ``outside_mean``), and
+                ``extrapolated_fraction`` (fraction of the cell's observations
+                whose ``log_x`` is outside the reference cell's range).
+
+        Raises:
+            ValueError: If ``prob`` or ``interval_prob`` is not strictly between 0
+                and 1.
+        """
+        _check_prob(prob)
+        _check_prob(interval_prob)
+        rng = self._rng(random_seed)
+        index = self._draw_index(n_draws)
+        deviation = self.table["log_y"].to_numpy() - self._marginal_fitted_draws(
+            self.table, genotype_effects=False, index=index
+        )
+        n_samples = len(deviation)
+
+        worms = self.table.drop_duplicates("worm_id")
+        worm_of_row = pd.Index(worms["worm_id"]).get_indexer(self.table["worm_id"])
+        n_molts = np.bincount(worm_of_row, minlength=len(worms))
+        averaging = csr_matrix(
+            (
+                1 / n_molts[worm_of_row],
+                (np.arange(len(worm_of_row)), worm_of_row),
+            ),
+            shape=(len(worm_of_row), len(worms)),
+        )
+        worm_means = np.asarray(averaging.T @ deviation.T).T
+
+        tail = (1 - prob) / 2
+        tau = self._scale_draws("tau", index)[:, 0]
+        sigma = self._scale_draws("sigma", index)[:, 0]
+        molt_counts, count_of_worm = np.unique(n_molts, return_inverse=True)
+        lower = np.empty((n_samples, len(molt_counts)))
+        upper = np.empty_like(lower)
+        if self._has("nu"):
+            nu = self._draws("nu", index)
+            chunk = max(1, 2_000_000 // (n_simulations * molt_counts.max()))
+            for j, n in enumerate(molt_counts):
+                for start in range(0, n_samples, chunk):
+                    rows = slice(start, start + chunk)
+                    size = (len(nu[rows]), n_simulations)
+                    noise = rng.standard_t(
+                        nu[rows, np.newaxis, np.newaxis], (*size, n)
+                    ).mean(axis=2)
+                    simulated = (
+                        tau[rows, np.newaxis] * rng.standard_normal(size)
+                        + sigma[rows, np.newaxis] * noise
+                    )
+                    lower[rows, j] = np.quantile(simulated, tail, axis=1)
+                    upper[rows, j] = np.quantile(simulated, 1 - tail, axis=1)
+        else:
+            sd = np.sqrt(
+                tau[:, np.newaxis] ** 2 + sigma[:, np.newaxis] ** 2 / molt_counts
+            )
+            upper = norm.ppf(1 - tail) * sd
+            lower = -upper
+        below = worm_means < lower[:, count_of_worm]
+        above = worm_means > upper[:, count_of_worm]
+
+        worm_cells = worms["condition_id"].map(self.coding.cell_of_condition).to_numpy()
+        row_cells = self._row_cells().to_numpy()
+        is_out = (self.support_flags() == "out").to_numpy()
+        rows = []
+        for cell in self.coding.cells:
+            in_cell = worm_cells == cell
+            row = {
+                "cell": cell,
+                "n_worms": int(in_cell.sum()),
+                "n_observations": int((row_cells == cell).sum()),
+            }
+            for name, flags in (
+                ("below", below),
+                ("above", above),
+                ("outside", below | above),
+            ):
+                row.update(
+                    _summarize_draws(
+                        flags[:, in_cell].mean(axis=1), interval_prob, name
+                    )
+                )
+            row["extrapolated_fraction"] = float(is_out[row_cells == cell].mean())
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def posterior_predictive_residuals(
+        self, n_draws: int | None = 200, random_seed: int | None = None
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Simulate marginal residuals of replicated data on the observed design, alongside the observed ones.
+
+        For each selected posterior draw, every worm gets a new intercept from
+        ``Normal(0, tau)`` of its cell and every observation a new residual from
+        ``Normal(0, sigma)`` (or ``StudentT(nu, 0, sigma)``) of its cell, keeping
+        the observed worms, molts and ``log_x``. The replicated marginal residual
+        around the cell's own curve is then intercept plus residual; the
+        observed one is ``log_y`` minus the same draw's fitted value without worm
+        intercepts. Pass both to ``ppc_summary``.
+
+        Parameters:
+            n_draws (int or None): Number of evenly spaced posterior draws to use;
+                ``None`` uses all. (default: 200)
+            random_seed (int or None): Seed of the replicates; ``None`` reuses the
+                sampling seed. (default: None)
+
+        Returns:
+            tuple[pd.DataFrame, pd.DataFrame]: ``(replicated, observed)``, each
+                with columns ``draw`` (flattened posterior draw index), ``cell``,
+                ``molt`` and ``residual`` (natural-log units), one row per draw ×
+                observation in draw-major order.
+        """
+        rng = self._rng(random_seed)
+        index = self._draw_index(n_draws)
+        fitted = self._marginal_fitted_draws(
+            self.table, genotype_effects=True, index=index
+        )
+        n_samples, n_rows = fitted.shape
+        cell_index = pd.Index(self.coding.cells)
+        row_cells = self._row_cells()
+        obs_cell = cell_index.get_indexer(row_cells)
+        worms = self.table.drop_duplicates("worm_id")
+        worm_of_row = pd.Index(worms["worm_id"]).get_indexer(self.table["worm_id"])
+        worm_cell = cell_index.get_indexer(
+            worms["condition_id"].map(self.coding.cell_of_condition)
+        )
+
+        tau = self._scale_draws("tau", index)
+        sigma = self._scale_draws("sigma", index)
+        worm_effect = tau[:, worm_cell] * rng.standard_normal((n_samples, len(worms)))
+        if self._has("nu"):
+            noise = rng.standard_t(
+                self._draws("nu", index)[:, np.newaxis], (n_samples, n_rows)
+            )
+        else:
+            noise = rng.standard_normal((n_samples, n_rows))
+        replicated = worm_effect[:, worm_of_row] + sigma[:, obs_cell] * noise
+        observed = self.table["log_y"].to_numpy() - fitted
+
+        draw_ids = np.arange(n_samples) if index is None else index
+        design = {
+            "draw": np.repeat(draw_ids, n_rows),
+            "cell": np.tile(row_cells.to_numpy(), n_samples),
+            "molt": np.tile(self.table["molt"].to_numpy(), n_samples),
+        }
+        return (
+            pd.DataFrame({**design, "residual": replicated.ravel()}),
+            pd.DataFrame({**design, "residual": observed.ravel()}),
+        )
+
+    def ppc_summary(
+        self,
+        replicated: pd.DataFrame | None = None,
+        observed: pd.DataFrame | None = None,
+        prob: float = 0.95,
+        n_draws: int | None = 200,
+        random_seed: int | None = None,
+    ) -> pd.DataFrame:
+        """
+        Compare the spread and tails of each cell's marginal residuals with posterior predictive replicates.
+
+        Per cell and draw, three statistics are computed on the observed and the
+        replicated residuals: the SD, the excess kurtosis (Fisher) and the
+        fraction of residuals whose absolute value exceeds 3 robust SDs
+        (``1.4826 * MAD``). The posterior predictive p-value of each is the
+        fraction of draws whose replicated statistic is at least the observed
+        one; values near 0 or 1 flag a feature of the data the model does not
+        reproduce, e.g. heavier tails than a normal likelihood allows.
+
+        Parameters:
+            replicated (pd.DataFrame or None): Replicated residuals from
+                ``posterior_predictive_residuals``; ``None`` computes them.
+                (default: None)
+            observed (pd.DataFrame or None): Observed residuals from the same
+                call. (default: None)
+            prob (float): Probability mass of the equal-tailed intervals.
+                (default: 0.95)
+            n_draws (int or None): Draws used when the residuals are computed
+                here. (default: 200)
+            random_seed (int or None): Seed used when the residuals are computed
+                here. (default: None)
+
+        Returns:
+            pd.DataFrame: One row per cell × statistic with ``cell``,
+                ``statistic`` (``"sd"``, ``"excess_kurtosis"`` or
+                ``"outlier_fraction"``), ``observed`` (mean over draws),
+                ``replicated_mean``, ``replicated_lower``, ``replicated_upper`` and
+                ``p_value``.
+
+        Raises:
+            ValueError: If ``prob`` is not strictly between 0 and 1.
+        """
+        _check_prob(prob)
+        if replicated is None or observed is None:
+            replicated, observed = self.posterior_predictive_residuals(
+                n_draws, random_seed
+            )
+
+        def by_draw(residuals, cell):
+            in_cell = residuals[residuals["cell"] == cell].sort_values(
+                "draw", kind="stable"
+            )
+            n_samples = in_cell["draw"].nunique()
+            return in_cell["residual"].to_numpy().reshape(n_samples, -1)
+
+        rows = []
+        for cell in self.coding.cells:
+            observed_statistics = _residual_statistics(by_draw(observed, cell))
+            replicated_statistics = _residual_statistics(by_draw(replicated, cell))
+            for name, values in observed_statistics.items():
+                row = {"cell": cell, "statistic": name, "observed": values.mean()}
+                row.update(
+                    _summarize_draws(replicated_statistics[name], prob, "replicated")
+                )
+                row["p_value"] = float(np.mean(replicated_statistics[name] >= values))
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+    def molt_dispersion_tests(
+        self,
+        comparisons: (
+            list[tuple[int | str | dict[str, str], int | str | dict[str, str]]] | None
+        ) = None,
+        family: Literal["all", "comparison"] = "all",
+        n_draws: int | None = None,
+    ) -> pd.DataFrame:
+        """
+        Test, molt by molt, whether two genotype cells differ in the spread of their residuals.
+
+        Each test is a Brown–Forsythe test (``scipy.stats.levene`` with
+        ``center="median"``) on the posterior mean marginal residuals around each
+        cell's own curve (see ``residuals``), so differences in mean are removed
+        and only spread is compared. The p-values are adjusted with Holm's
+        step-down procedure (Holm 1979, Scand J Stat 6:65), which controls the
+        family-wise error rate under any dependence between the tests. The
+        per-molt tests of a comparison share worms and are therefore positively
+        correlated, which makes Holm conservative here. Tests with fewer than 2
+        observations in a cell are not run (NaN) and do not count toward the
+        family.
+
+        Parameters:
+            comparisons (list[tuple] or None): Pairs ``(cell_a, cell_b)``, each a
+                condition id, cell label or dict of factor levels; ``None``
+                compares each non-reference cell with the reference cell.
+                (default: None)
+            family (str): ``"all"`` adjusts over every comparison × molt of the
+                call; ``"comparison"`` adjusts over the molts within each
+                comparison. (default: "all")
+            n_draws (int or None): Number of evenly spaced posterior draws used for
+                the residuals; ``None`` uses all. (default: None)
+
+        Returns:
+            pd.DataFrame: One row per comparison × molt with ``comparison``
+                (``"cell_a vs cell_b"``), ``cell_a``, ``cell_b``, ``molt``,
+                ``n_a``, ``n_b``, ``statistic``, ``p_raw``, ``p_holm`` and
+                ``family_size``.
+
+        Raises:
+            ValueError: If ``family`` is unknown or a cell is not fitted.
+        """
+        if family not in ("all", "comparison"):
+            raise ValueError(f"`family` must be 'all' or 'comparison', got {family!r}.")
+        if comparisons is None:
+            pairs = [(c, self.coding.reference_cell) for c in self.coding.cells[1:]]
+        else:
+            pairs = [
+                tuple(self.coding.cell_label(self.coding.resolve_cell(c)) for c in pair)
+                for pair in comparisons
+            ]
+        fitted = self._marginal_fitted_draws(
+            self.table, genotype_effects=True, index=self._draw_index(n_draws)
+        )
+        residual = self.table["log_y"].to_numpy() - fitted.mean(axis=0)
+        row_cells = self._row_cells().to_numpy()
+        molts = self.table["molt"].to_numpy()
+
+        rows = []
+        for cell_a, cell_b in pairs:
+            in_pair = np.isin(row_cells, [cell_a, cell_b])
+            for molt in sorted(np.unique(molts[in_pair])):
+                a = residual[(row_cells == cell_a) & (molts == molt)]
+                b = residual[(row_cells == cell_b) & (molts == molt)]
+                statistic = p_raw = np.nan
+                if len(a) >= 2 and len(b) >= 2:
+                    statistic, p_raw = levene(a, b, center="median")
+                rows.append(
+                    {
+                        "comparison": f"{cell_a} vs {cell_b}",
+                        "cell_a": cell_a,
+                        "cell_b": cell_b,
+                        "molt": molt,
+                        "n_a": len(a),
+                        "n_b": len(b),
+                        "statistic": float(statistic),
+                        "p_raw": float(p_raw),
+                    }
+                )
+        tests = pd.DataFrame(
+            rows,
+            columns=[
+                "comparison",
+                "cell_a",
+                "cell_b",
+                "molt",
+                "n_a",
+                "n_b",
+                "statistic",
+                "p_raw",
+            ],
+        )
+        tests["p_holm"] = np.nan
+        tests["family_size"] = 0
+        families = (
+            [tests.index]
+            if family == "all"
+            else [group.index for _, group in tests.groupby("comparison", sort=False)]
+        )
+        for members in families:
+            tested = members[tests.loc[members, "p_raw"].notna().to_numpy()]
+            if len(tested):
+                tests.loc[tested, "p_holm"] = multipletests(
+                    tests.loc[tested, "p_raw"], method="holm"
+                )[1]
+            tests.loc[members, "family_size"] = len(tested)
+        return tests
+
+
+def _check_prob(prob: float) -> None:
+    if not 0 < prob < 1:
+        raise ValueError(f"`prob` must be between 0 and 1, got {prob}.")
+
+
+def _summarize_draws(
+    draws: np.ndarray, prob: float, prefix: str = "", percent: bool = False
+) -> dict[str, float]:
+    """
+    Summarize draws with their mean and central ``prob`` interval, ignoring NaN.
+
+    Parameters:
+        draws (np.ndarray): Draws of shape ``(n_draws,)``.
+        prob (float): Probability mass of the equal-tailed interval.
+        prefix (str): Prefix of the keys, e.g. ``"offset"`` gives
+            ``"offset_mean"``. (default: "")
+        percent (bool): Also return the values converted with
+            ``log_ratio_to_percentage`` under ``..._percent`` keys.
+            (default: False)
+
+    Returns:
+        dict[str, float]: ``mean``, ``lower`` and ``upper`` (NaN if every draw is
+            NaN), with the prefix and optional percent keys.
+    """
+    draws = np.asarray(draws, dtype=float)
+    tail = (1 - prob) / 2
+    if np.isnan(draws).all():
+        values = (np.nan, np.nan, np.nan)
+    else:
+        values = (
+            float(np.nanmean(draws)),
+            float(np.nanquantile(draws, tail)),
+            float(np.nanquantile(draws, 1 - tail)),
+        )
+    keys = [f"{prefix}_{k}" if prefix else k for k in ("mean", "lower", "upper")]
+    summary = dict(zip(keys, values))
+    if percent:
+        summary.update(
+            {f"{k}_percent": log_ratio_to_percentage(v) for k, v in zip(keys, values)}
+        )
+    return summary
+
+
+def _sd(values: np.ndarray) -> float:
+    """Sample SD with ``ddof=1``; NaN for fewer than 2 values."""
+    return float(np.std(values, ddof=1)) if len(values) > 1 else np.nan
+
+
+def _residual_statistics(residuals: np.ndarray) -> dict[str, np.ndarray]:
+    """
+    Compute the SD, excess kurtosis and outlier fraction of each row of residuals.
+
+    Parameters:
+        residuals (np.ndarray): Residuals of shape ``(n_draws, n_residuals)``.
+
+    Returns:
+        dict[str, np.ndarray]: ``"sd"``, ``"excess_kurtosis"`` and
+            ``"outlier_fraction"`` (fraction of absolute residuals above
+            ``OUTLIER_ROBUST_SDS`` robust SDs), each of shape ``(n_draws,)``.
+    """
+    median = np.median(residuals, axis=1, keepdims=True)
+    robust_sd = MAD_SCALE * np.median(np.abs(residuals - median), axis=1, keepdims=True)
+    return {
+        "sd": residuals.std(axis=1, ddof=1),
+        "excess_kurtosis": kurtosis(residuals, axis=1),
+        "outlier_fraction": np.mean(
+            np.abs(residuals) > OUTLIER_ROBUST_SDS * robust_sd, axis=1
+        ),
+    }
 
 
 def _compute_diagnostics(idata: DataTree, var_names: list[str]) -> dict[str, float]:
@@ -1359,3 +2110,133 @@ def fit_proportion_model(
     if reference_shape == "auto":
         result.linearity_threshold = linearity_threshold
     return result
+
+
+# PER-EXPERIMENT FITS
+
+
+def fit_per_experiment(
+    table: pd.DataFrame,
+    reference_shape: Literal["linear", "spline"],
+    **fit_kwargs,
+) -> dict[str, ProportionModelResult]:
+    """
+    Fit the proportion model separately to each experiment, to check that effects replicate.
+
+    Every experiment is fitted with the same reference shape and, unless
+    ``x_ref`` is given, the same centering point (the median reference ``log_x``
+    of the whole table), so that ``beta`` means the same body size in every fit.
+    Genotype cells absent from an experiment are dropped from its fit, with a
+    warning naming them. A single-experiment fit has no experiment effect.
+
+    Parameters:
+        table (pd.DataFrame): Output of ``build_proportion_table``.
+        reference_shape (str): ``"linear"`` or ``"spline"``; ``"auto"`` is
+            refused because it could pick different shapes per experiment.
+        **fit_kwargs: Keyword arguments of ``fit_proportion_model``, which must
+            include ``random_seed`` and the genotype coding (``factors`` and
+            ``reference``, or ``reference_condition``).
+
+    Returns:
+        dict[str, ProportionModelResult]: Fit of each experiment, keyed by its
+            label, in sorted order.
+
+    Raises:
+        ValueError: If ``reference_shape`` is not ``"linear"`` or ``"spline"``,
+            or an experiment has no reference-cell observations.
+    """
+    if reference_shape not in ("linear", "spline"):
+        raise ValueError(
+            f"`reference_shape` must be 'linear' or 'spline', got {reference_shape!r}; "
+            "'auto' could choose different shapes for different experiments."
+        )
+    coding = build_genotype_coding(
+        sorted(int(c) for c in table["condition_id"].unique()),
+        fit_kwargs.get("factors"),
+        fit_kwargs.get("reference"),
+        fit_kwargs.get("reference_condition"),
+    )
+    row_cells = table["condition_id"].map(coding.cell_of_condition).to_numpy()
+    is_reference = row_cells == coding.reference_cell
+    if fit_kwargs.get("x_ref") is None:
+        fit_kwargs["x_ref"] = float(np.median(table["log_x"].to_numpy()[is_reference]))
+
+    results = {}
+    for experiment in sorted(table["experiment"].unique()):
+        in_experiment = (table["experiment"] == experiment).to_numpy()
+        present = set(row_cells[in_experiment])
+        if coding.reference_cell not in present:
+            raise ValueError(
+                f"Experiment {experiment} has no observations of the reference cell "
+                f"{coding.reference_cell!r}."
+            )
+        missing = [cell for cell in coding.cells if cell not in present]
+        if missing:
+            warn(
+                f"Experiment {experiment} has no observations of cells {missing}; "
+                "they are dropped from its fit.",
+                stacklevel=2,
+            )
+        results[experiment] = fit_proportion_model(
+            table[in_experiment].reset_index(drop=True),
+            reference_shape=reference_shape,
+            **fit_kwargs,
+        )
+    return results
+
+
+def compare_experiments(
+    results: dict[str, ProportionModelResult], prob: float = 0.95
+) -> pd.DataFrame:
+    """
+    Tabulate the genotype effects and variance ratios of per-experiment fits side by side.
+
+    Parameters:
+        results (dict[str, ProportionModelResult]): Fits keyed by experiment,
+            e.g. from ``fit_per_experiment``.
+        prob (float): Probability mass of the equal-tailed intervals.
+            (default: 0.95)
+
+    Returns:
+        pd.DataFrame: One row per experiment × parameter with ``experiment``,
+            ``parameter`` (``beta[...]``, ``gamma[...]`` and, for fits with group
+            variances, ``tau_ratio[...]`` and ``sigma_ratio[...]`` relative to the
+            reference cell), ``mean``, ``lower``, ``upper`` and the ``_percent``
+            versions, which are NaN except for ``beta`` rows.
+
+    Raises:
+        ValueError: If ``prob`` is not strictly between 0 and 1.
+    """
+    _check_prob(prob)
+    rows = []
+    for experiment, result in results.items():
+
+        def add(parameter, draws, percent=False):
+            row = {"experiment": experiment, "parameter": parameter}
+            row.update(_summarize_draws(draws, prob, percent=percent))
+            rows.append(row)
+
+        if result.coding.effect_names:
+            beta, gamma = result._draws("beta"), result._draws("gamma")
+            for k, effect in enumerate(result.coding.effect_names):
+                add(f"beta[{effect}]", beta[:, k], percent=True)
+            for k, effect in enumerate(result.coding.effect_names):
+                add(f"gamma[{effect}]", gamma[:, k])
+        if result.group_variances:
+            for name in ("tau", "sigma"):
+                draws = result._draws(name)
+                for k, cell in enumerate(result.coding.cells[1:], start=1):
+                    add(f"{name}_ratio[{cell}]", draws[:, k] / draws[:, 0])
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "experiment",
+            "parameter",
+            "mean",
+            "lower",
+            "upper",
+            "mean_percent",
+            "lower_percent",
+            "upper_percent",
+        ],
+    )

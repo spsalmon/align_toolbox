@@ -833,3 +833,501 @@ def test_forced_spline_matches_line_for_straight_allometry(
     assert spline["sd_s"] < 0.01
     for parameter in ("beta[condition[1]]", "gamma[condition[1]]"):
         assert spline[parameter] == pytest.approx(linear[parameter], abs=0.01)
+
+
+# PUBLICATION ANALYSES ON A HAND-BUILT POSTERIOR
+
+
+def test_cell_offsets_split_offset_into_main_effects_and_interaction():
+    coding = pmod.build_genotype_coding(list(FACTORS_2X2), FACTORS_2X2, REFERENCE_2X2)
+    # the double mutant (condition 3) only spans log_x 3-4
+    table = pd.concat(
+        [_reference_table({1: [1.0, 2.0]}, condition_id=c) for c in (0, 1, 2)]
+        + [_reference_table({1: [3.0, 4.0]}, condition_id=3)],
+        ignore_index=True,
+    )
+    beta = np.array([0.10, 0.20, -0.05])
+    gamma = np.array([0.01, 0.02, 0.03])
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0, 1.0]),
+            "b": ((), [0.5, 0.5]),
+            "beta": (("effect",), [beta - 0.01, beta + 0.01]),
+            "gamma": (("effect",), [gamma, gamma]),
+        },
+        x_ref=2.0,
+    )
+    offsets = result.cell_offsets(log_x=3.0).set_index("cell")
+    double = offsets.loc["yap1=abt7, tir=col-10"]
+    # main effects: 0.10 + 0.20 + (0.01 + 0.02) * 1; interaction: -0.05 + 0.03 * 1
+    assert double["expected_mean"] == pytest.approx(0.33)
+    assert double["interaction_mean"] == pytest.approx(-0.02)
+    assert double["offset_mean"] == pytest.approx(0.31)
+    assert double["offset_mean_percent"] == pytest.approx(100 * np.expm1(0.31))
+    # interaction draws are -0.03 and -0.01
+    assert double["interaction_prob_positive"] == 0
+    single = offsets.loc["yap1=abt7, tir=none"]
+    assert single["expected_mean"] == pytest.approx(single["offset_mean"])
+    assert np.isnan(single["interaction_mean"])
+    assert np.isnan(single["interaction_prob_positive"])
+    assert offsets["within_cell_range"].tolist() == [False, False, False, True]
+    assert not offsets["within_reference_range"].any()
+    at_x_ref = result.cell_offsets().set_index("cell")
+    assert at_x_ref["within_reference_range"].all()
+    assert at_x_ref["within_cell_range"].tolist() == [True, True, True, False]
+
+
+def test_cell_offsets_with_single_factor_coding_have_no_interaction():
+    coding = pmod.build_genotype_coding([0, 1], reference_condition=0)
+    table = pd.concat(
+        [_reference_table({1: [1.0, 2.0]}, condition_id=c) for c in (0, 1)],
+        ignore_index=True,
+    )
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0]),
+            "b": ((), [0.5]),
+            "beta": (("effect",), [[0.1]]),
+            "gamma": (("effect",), [[0.2]]),
+        },
+        x_ref=1.5,
+    )
+    offsets = result.cell_offsets(log_x=2.0)
+    np.testing.assert_allclose(offsets["offset_mean"], [0.0, 0.2])
+    np.testing.assert_allclose(offsets["expected_mean"], offsets["offset_mean"])
+    assert offsets["interaction_mean"].isna().all()
+
+
+def _mutant_rows(log_x_by_molt, offset, condition_id=1):
+    """Mutant worms exactly ``offset`` above the line of ``_reference_table``."""
+    table = _reference_table(log_x_by_molt, condition_id=condition_id)
+    return table.assign(worm_id="m" + table["worm_id"], log_y=table["log_y"] + offset)
+
+
+def test_molt_positions_compare_data_and_model_offsets():
+    coding = pmod.build_genotype_coding([0, 1], reference_condition=0)
+    reference = _reference_table({1: [1.0, 1.2], 2: [2.0, 2.2]})
+    # mutant molt means: 0.5 (below the reference), 1.6 (gap), 2.5 (above)
+    mutant = _mutant_rows({1: [0.4, 0.6], 2: [1.5, 1.7], 3: [2.4, 2.6]}, 0.1)
+    table = pd.concat([reference, mutant], ignore_index=True)
+    table["log_y"] += -0.5 * 1.5
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0, 1.0]),
+            "b": ((), [0.5, 0.5]),
+            "beta": (("effect",), [[0.09], [0.11]]),
+            "gamma": (("effect",), [[0.0], [0.0]]),
+        },
+        x_ref=1.5,
+    )
+    positions = result.molt_positions().set_index(["cell", "molt"])
+    mutant_rows = positions.loc["condition=1"]
+    assert mutant_rows["extrapolated"].tolist() == [True, False, True]
+    np.testing.assert_allclose(mutant_rows["log_x_mean"], [0.5, 1.6, 2.5])
+    np.testing.assert_allclose(mutant_rows["log_x_sd"], np.std([0.4, 0.6], ddof=1))
+    np.testing.assert_allclose(mutant_rows["observed_offset_mean"], 0.1)
+    np.testing.assert_allclose(mutant_rows["model_offset_mean"], 0.1)
+    assert (mutant_rows["n"] == 2).all()
+    np.testing.assert_allclose(
+        positions.loc["condition=0", "observed_offset_mean"], 0, atol=1e-12
+    )
+    assert not positions.loc["condition=0", "extrapolated"].any()
+
+
+def test_repeatability_uses_the_residual_standard_deviation():
+    coding = pmod.build_genotype_coding([0, 1], reference_condition=0)
+    table = _reference_table({1: [1.0, 2.0]})
+    posterior = {
+        "a": ((), [1.0, 1.0, 1.0]),
+        "b": ((), [0.5, 0.5, 0.5]),
+        "tau": (("cell",), [[0.03, 0.06]] * 3),
+        "sigma": (("cell",), [[0.03, 0.03]] * 3),
+    }
+    normal = _result(table, coding, posterior, x_ref=1.5, group_variances=True)
+    repeatability = normal.repeatability().set_index("cell")
+    np.testing.assert_allclose(repeatability["repeatability_mean"], [0.5, 0.8])
+    np.testing.assert_allclose(repeatability["repeatability_ratio_mean"], [1.0, 1.6])
+    assert (repeatability["sd_undefined_fraction"] == 0).all()
+
+    # nu = 4 doubles the residual variance; the nu = 1.5 draw is excluded
+    student_t = _result(
+        table,
+        coding,
+        dict(posterior, nu=((), [1.5, 4.0, 4.0])),
+        x_ref=1.5,
+        group_variances=True,
+        likelihood="student_t",
+    )
+    repeatability = student_t.repeatability().set_index("cell")
+    np.testing.assert_allclose(repeatability["repeatability_mean"], [1 / 3, 2 / 3])
+    assert repeatability["sd_undefined_fraction"].iloc[0] == pytest.approx(1 / 3)
+
+    shared = _result(
+        table,
+        coding,
+        dict(posterior, tau=((), [0.03] * 3), sigma=((), [0.03] * 3)),
+        x_ref=1.5,
+    ).repeatability()
+    assert shared["cell"].tolist() == ["shared"]
+    assert shared["repeatability_mean"].iloc[0] == pytest.approx(0.5)
+    assert np.isnan(shared["repeatability_ratio_mean"].iloc[0])
+
+
+def test_worm_deviations_are_wide_and_differ_by_the_cell_offset():
+    coding = pmod.build_genotype_coding([0, 1], reference_condition=0)
+    reference = _reference_table({1: [1.0, 1.1], 2: [2.0, 2.1]})
+    # worm m1 is missing at molt 2
+    mutant = _mutant_rows({1: [1.0, 1.1], 2: [2.0]}, 0.0)
+    table = pd.concat([reference, mutant], ignore_index=True)
+    rng = np.random.default_rng(0)
+    table["log_y"] += -0.5 * 1.5 + rng.normal(0, 0.02, len(table))
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0]),
+            "b": ((), [0.5]),
+            "beta": (("effect",), [[0.1]]),
+            "gamma": (("effect",), [[0.2]]),
+        },
+        x_ref=1.5,
+    )
+    own = result.worm_deviations("own").set_index("worm_id")
+    to_reference = result.worm_deviations("reference").set_index("worm_id")
+    assert list(own.columns) == ["condition_id", "experiment", 1, 2]
+    assert list(own.index) == ["w0", "w1", "mw0", "mw1"]
+    assert np.isnan(own.loc["mw1", 2])
+    np.testing.assert_allclose(
+        to_reference.loc[["w0", "w1"], [1, 2]], own.loc[["w0", "w1"], [1, 2]]
+    )
+    # the mutant's offset is 0.1 + 0.2 * (log_x - 1.5)
+    difference = (
+        to_reference.loc[["mw0", "mw1"], [1, 2]] - own.loc[["mw0", "mw1"], [1, 2]]
+    )
+    expected = [
+        [0.1 + 0.2 * (1.0 - 1.5), 0.1 + 0.2 * (2.0 - 1.5)],
+        [0.1 + 0.2 * (1.1 - 1.5), np.nan],
+    ]
+    np.testing.assert_allclose(difference, expected)
+    with pytest.raises(ValueError, match="relative_to"):
+        result.worm_deviations("other")
+
+
+@pytest.mark.parametrize("likelihood", ["normal", "student_t"])
+def test_penetrance_interval_narrows_with_the_number_of_molts(likelihood):
+    coding = pmod.build_genotype_coding([0, 1], reference_condition=0)
+    tau, sigma = 0.03, 0.04
+    # 95% bound of a worm mean over n molts: 1.96 * sqrt(tau² + sigma² / n)
+    bound = {n: 1.96 * np.sqrt(tau**2 + sigma**2 / n) for n in (1, 3)}
+    rows = []
+    for name, n, deviation in (
+        ("inside_1", 1, 0.8 * bound[1]),
+        ("above_1", 1, 1.2 * bound[1]),
+        ("inside_3", 3, -0.8 * bound[3]),
+        ("below_3", 3, -1.2 * bound[3]),
+        # inside the 1-molt interval but outside the 3-molt one
+        ("above_3", 3, 1.2 * bound[3]),
+    ):
+        for molt in range(1, n + 1):
+            rows.append(
+                {
+                    "condition_id": 1,
+                    "worm_id": name,
+                    "experiment": "E1",
+                    "molt": molt,
+                    "log_x": 1.5,
+                    "log_y": 1.0 + deviation,
+                }
+            )
+    rows.append(dict(rows[0], condition_id=0, worm_id="ref", log_y=1.0))
+    table = pd.DataFrame(rows)
+    assert 1.2 * bound[3] < bound[1]
+    posterior = {
+        "a": ((), [1.0]),
+        "b": ((), [0.5]),
+        "beta": (("effect",), [[0.0]]),
+        "gamma": (("effect",), [[0.0]]),
+        "tau": ((), [tau]),
+        "sigma": ((), [sigma]),
+    }
+    if likelihood == "student_t":
+        # a t distribution with huge nu is normal
+        posterior["nu"] = ((), [1e6])
+    result = _result(table, coding, posterior, x_ref=1.5, likelihood=likelihood)
+    penetrance = result.penetrance(random_seed=0, n_simulations=20_000).set_index(
+        "cell"
+    )
+    mutant = penetrance.loc["condition=1"]
+    assert mutant["n_worms"] == 5
+    assert mutant["below_mean"] == pytest.approx(1 / 5)
+    assert mutant["above_mean"] == pytest.approx(2 / 5)
+    assert mutant["outside_mean"] == pytest.approx(3 / 5)
+    assert penetrance.loc["condition=0", "outside_mean"] == 0
+
+
+def _dispersion_result(sd_by_condition, n_worms=150):
+    coding = pmod.build_genotype_coding(list(sd_by_condition), reference_condition=0)
+    rng = np.random.default_rng(0)
+    rows = []
+    for condition_id, sd in sd_by_condition.items():
+        for worm in range(n_worms):
+            for molt in range(1, 5):
+                log_x = 10.0 + molt
+                rows.append(
+                    {
+                        "condition_id": condition_id,
+                        "worm_id": f"c{condition_id}_{worm}",
+                        "experiment": "E1",
+                        "molt": molt,
+                        "log_x": log_x,
+                        "log_y": 1.0 + 0.5 * (log_x - 12.0) + rng.normal(0, sd),
+                    }
+                )
+    n_effects = len(coding.effect_names)
+    result = _result(
+        pd.DataFrame(rows),
+        coding,
+        {
+            "a": ((), [1.0]),
+            "b": ((), [0.5]),
+            "beta": (("effect",), [np.zeros(n_effects)]),
+            "gamma": (("effect",), [np.zeros(n_effects)]),
+        },
+        x_ref=12.0,
+    )
+    return result
+
+
+def test_molt_dispersion_tests_detect_doubled_residual_sd_with_holm_adjustment():
+    from statsmodels.stats.multitest import multipletests
+
+    result = _dispersion_result({0: 0.03, 1: 0.06, 2: 0.03})
+    for family, family_size in (("all", 8), ("comparison", 4)):
+        tests = result.molt_dispersion_tests(family=family)
+        assert len(tests) == 8
+        assert (tests["family_size"] == family_size).all()
+        assert (tests["p_holm"] >= tests["p_raw"]).all()
+        assert (tests[["n_a", "n_b"]] == 150).all().all()
+        groups = (
+            [tests] if family == "all" else [g for _, g in tests.groupby("comparison")]
+        )
+        for group in groups:
+            np.testing.assert_allclose(
+                group["p_holm"], multipletests(group["p_raw"], method="holm")[1]
+            )
+        doubled = tests[tests["cell_a"] == "condition=1"]
+        assert doubled["molt"].tolist() == [1, 2, 3, 4]
+        assert (doubled["p_holm"] < 0.05).all()
+        assert doubled["comparison"].iloc[0] == "condition=1 vs condition=0"
+
+    explicit = result.molt_dispersion_tests(comparisons=[(1, 2)])
+    assert (explicit["comparison"] == "condition=1 vs condition=2").all()
+    with pytest.raises(ValueError, match="family"):
+        result.molt_dispersion_tests(family="molt")
+
+
+def test_fit_per_experiment_refuses_auto_reference_shape():
+    with pytest.raises(ValueError, match="auto"):
+        pmod.fit_per_experiment(
+            _table(0), reference_shape="auto", reference_condition=0, random_seed=0
+        )
+
+
+# PUBLICATION ANALYSES ON SAMPLED FITS
+
+
+def _cell(n, beta=0.0, tau=0.03, sigma=0.03, nu=None, x_shift=0.0):
+    return {
+        "n": n,
+        "beta": beta,
+        "gamma": 0.0,
+        "tau": tau,
+        "sigma": sigma,
+        "nu": nu,
+        "x_shift": x_shift,
+    }
+
+
+def _fit_simulated(cells, seed, **fit_kwargs):
+    table = pmod.build_proportion_table(
+        simulate_proportions(seed, cells), *COLUMNS, list(cells)
+    )
+    fit_kwargs.setdefault("reference_condition", 0)
+    return pmod.fit_proportion_model(
+        table, x_ref=X0, draws=500, chains=2, random_seed=seed, **fit_kwargs
+    )
+
+
+# 3 x 2 factorial: yap1 in {WT, abt7, abt8} x tir in {none, col-10}
+FACTORIAL_MAIN = {"abt7": 0.10, "abt8": -0.06, "col-10": 0.05}
+FACTORIAL_INTERACTION = {"abt7": 0.08, "abt8": 0.0}
+FACTORIAL_FACTORS = {
+    0: {"yap1": "WT", "tir": "none"},
+    1: {"yap1": "abt7", "tir": "none"},
+    2: {"yap1": "abt8", "tir": "none"},
+    3: {"yap1": "WT", "tir": "col-10"},
+    4: {"yap1": "abt7", "tir": "col-10"},
+    5: {"yap1": "abt8", "tir": "col-10"},
+}
+
+
+def _factorial_beta(levels):
+    beta = sum(FACTORIAL_MAIN.get(level, 0.0) for level in levels.values())
+    if levels["tir"] == "col-10":
+        beta += FACTORIAL_INTERACTION.get(levels["yap1"], 0.0)
+    return beta
+
+
+@pytest.fixture(scope="module")
+def factorial_fit():
+    cells = {
+        # the abt8 double mutant is small: its whole log_x range is below X0
+        c: _cell(80, _factorial_beta(levels), x_shift=-2.0 if c == 5 else 0.0)
+        for c, levels in FACTORIAL_FACTORS.items()
+    }
+    return _fit_simulated(
+        cells,
+        seed=7,
+        factors=FACTORIAL_FACTORS,
+        reference={"yap1": "WT", "tir": "none"},
+        reference_condition=None,
+    )
+
+
+@pytest.mark.slow
+def test_cell_offsets_recover_factorial_interaction(factorial_fit):
+    offsets = factorial_fit.cell_offsets().set_index("cell")
+    coding = factorial_fit.coding
+    for condition_id, levels in FACTORIAL_FACTORS.items():
+        row = offsets.loc[coding.cell_label(levels)]
+        main = sum(FACTORIAL_MAIN.get(level, 0.0) for level in levels.values())
+        if levels["tir"] == "col-10" and levels["yap1"] != "WT":
+            truth = FACTORIAL_INTERACTION[levels["yap1"]]
+            assert row["interaction_lower"] < truth < row["interaction_upper"]
+        else:
+            assert np.isnan(row["interaction_mean"])
+        # expected is the sum of the fitted main effects at x_ref
+        fitted_main = sum(
+            offsets.loc[
+                coding.cell_label({**coding.reference, name: level}), "offset_mean"
+            ]
+            for name, level in levels.items()
+            if level != coding.reference[name]
+        )
+        assert row["expected_mean"] == pytest.approx(fitted_main)
+        assert row["expected_lower"] <= main <= row["expected_upper"]
+        assert row["within_cell_range"] == (condition_id != 5)
+    assert offsets["within_reference_range"].all()
+
+
+@pytest.fixture(scope="module")
+def variance_fit():
+    cells = {
+        0: _cell(400),
+        1: _cell(150, beta=0.3),
+        2: _cell(150, tau=0.05, sigma=0.02),
+        3: _cell(150, tau=0.02, sigma=0.04),
+    }
+    # with this seed every cell's realized REML repeatability is within 0.6 SD of
+    # its truth; on some seeds a cell's data alone sit 2 SD away
+    return cells, _fit_simulated(cells, seed=15, group_variances=True)
+
+
+@pytest.mark.slow
+def test_molt_positions_agree_with_model_when_correctly_specified(variance_fit):
+    _, result = variance_fit
+    positions = result.molt_positions()
+    np.testing.assert_allclose(
+        positions["observed_offset_mean"], positions["model_offset_mean"], atol=0.01
+    )
+    # every cell shares the reference sizes
+    assert not positions["extrapolated"].any()
+
+
+@pytest.mark.slow
+def test_repeatability_recovers_simulated_variance_shares(variance_fit):
+    cells, result = variance_fit
+    repeatability = result.repeatability().set_index("cell")
+    for condition_id, cell in cells.items():
+        truth = cell["tau"] ** 2 / (cell["tau"] ** 2 + cell["sigma"] ** 2)
+        row = repeatability.loc[f"condition={condition_id}"]
+        assert row["repeatability_lower"] < truth < row["repeatability_upper"]
+
+
+@pytest.mark.slow
+def test_penetrance_is_calibrated_on_the_reference_cell(variance_fit):
+    _, result = variance_fit
+    penetrance = result.penetrance(prob=0.95).set_index("cell")
+    assert penetrance.loc["condition=0", "outside_mean"] == pytest.approx(
+        0.05, abs=0.03
+    )
+    assert penetrance.loc["condition=1", "outside_mean"] > 0.95
+    assert penetrance.loc["condition=1", "above_mean"] > 0.95
+
+
+@pytest.fixture(scope="module")
+def heavy_tailed_fits():
+    cells = {0: _cell(100), 1: _cell(150, nu=3)}
+    return {
+        likelihood: _fit_simulated(
+            cells, seed=6, group_variances=True, likelihood=likelihood
+        )
+        for likelihood in ("normal", "student_t")
+    }
+
+
+@pytest.mark.slow
+def test_posterior_predictive_kurtosis_flags_heavy_tails_only_under_normal(
+    heavy_tailed_fits,
+):
+    p_values = {}
+    for likelihood, result in heavy_tailed_fits.items():
+        replicated, observed = result.posterior_predictive_residuals(random_seed=0)
+        assert len(replicated) == len(observed) == 200 * len(result.table)
+        summary = result.ppc_summary(replicated, observed).set_index(
+            ["cell", "statistic"]
+        )
+        p_values[likelihood] = summary.loc[
+            ("condition=1", "excess_kurtosis"), "p_value"
+        ]
+    assert not 0.05 <= p_values["normal"] <= 0.95
+    assert 0.05 <= p_values["student_t"] <= 0.95
+
+
+@pytest.mark.slow
+def test_fit_per_experiment_recovers_common_effects():
+    cells = {c: CELLS[c] for c in (0, 1, 2)}
+    table = pmod.build_proportion_table(
+        simulate_proportions(9, cells), *COLUMNS, list(cells)
+    )
+    # condition 2 was not imaged in E2
+    table = table[~((table["condition_id"] == 2) & (table["experiment"] == "E2"))]
+    with pytest.warns(
+        UserWarning, match=r"E2 has no observations of cells \['condition=2'\]"
+    ):
+        results = pmod.fit_per_experiment(
+            table,
+            reference_shape="linear",
+            reference_condition=0,
+            draws=500,
+            chains=2,
+            random_seed=8,
+        )
+    assert list(results) == ["E1", "E2"]
+    assert results["E2"].coding.cells == ["condition=0", "condition=1"]
+    assert results["E1"].x_ref == results["E2"].x_ref
+    comparison = pmod.compare_experiments(results).set_index(
+        ["experiment", "parameter"]
+    )
+    for experiment, result in results.items():
+        for condition_id in (1, 2):
+            if f"condition={condition_id}" not in result.coding.cells:
+                continue
+            row = comparison.loc[(experiment, f"beta[condition[{condition_id}]]")]
+            assert row["lower"] < CELLS[condition_id]["beta"] < row["upper"]

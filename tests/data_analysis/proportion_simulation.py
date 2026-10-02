@@ -24,7 +24,8 @@ def simulate_proportions(seed, cells=CELLS):
     numbers both start at 0. ``log_y = INTERCEPT + SLOPE * (log_x - X0)`` plus the
     cell's ``beta + gamma * (log_x - X0)``, the experiment effect, a worm
     intercept ``Normal(0, tau)`` and a residual ``Normal(0, sigma)`` (or
-    ``sigma * t(nu)``). Each worm survives to the next molt with probability 0.9.
+    ``sigma * t(nu)``). A cell's optional ``x_shift`` moves its molt clusters along
+    ``log_x``. Each worm survives to the next molt with probability 0.9.
     """
     rng = np.random.default_rng(seed)
     paths = list(EXPERIMENTS)
@@ -34,7 +35,12 @@ def simulate_proportions(seed, cells=CELLS):
         experiment = np.array([paths[i % 2] for i in range(n)])
         point = np.array([i // 2 for i in range(n)])
         worm_size = rng.normal(0, 0.03, (n, 1))
-        log_x = MOLT_CENTERS + worm_size + rng.normal(0, 0.02, (n, 4))
+        log_x = (
+            MOLT_CENTERS
+            + cell.get("x_shift", 0.0)
+            + worm_size
+            + rng.normal(0, 0.02, (n, 4))
+        )
         x_centered = log_x - X0
         if cell["nu"] is None:
             noise = rng.standard_normal((n, 4))
