@@ -41,6 +41,14 @@ images
    :undoc-members:
    :show-inheritance:
 
+proportion_model_plots
+----------------------
+
+.. automodule:: align_toolbox.plotting.proportion_model_plots
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 proportions
 -----------
 

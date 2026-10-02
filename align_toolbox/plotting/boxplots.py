@@ -282,6 +282,7 @@ def _annotate_significance(
     test: str | list[str] = "Mann-Whitney",
     verbose: bool = True,
     shown_df: pd.DataFrame | None = None,
+    custom_texts: list[str] | None = None,
 ) -> None:
     """
     Add significance annotations to a single subplot using statannotations.
@@ -309,39 +310,54 @@ def _annotate_significance(
         shown_df (pandas.DataFrame or None) : The values drawn on the axes, with the
             same layout as ``df``; ``df`` is used when ``None``.
             Defaults to ``None``.
+        custom_texts (list[str] or None) : Precomputed bracket texts, one per pair of
+            ``significance_pairs``.  When given, no test is run and ``test`` is
+            ignored.  Defaults to ``None``.
 
     Raises:
-        ValueError : If a test is not supported.
+        ValueError : If a test is not supported, or if ``custom_texts`` does not
+            have one text per pair of ``significance_pairs``.
 
     Returns:
         None
     """
-    tests = [test] if isinstance(test, str) else list(test)
-    df_filtered = df[df["Order"] == event_index]
-
-    print(f"\nSample sizes (non-NaN) for event index {event_index}, column '{column}':")
-    if verbose:
-        for condition in conditions_to_plot:
-            condition_data = df_filtered[df_filtered["Condition"] == condition][column]
-            n = condition_data.notna().sum()
-            print(f"Condition {condition}: n={n}")
-
-    if significance_pairs is None:
-        pairs = list(combinations(df["Condition"].unique(), 2))
+    if custom_texts is not None:
+        if significance_pairs is None or len(custom_texts) != len(significance_pairs):
+            raise ValueError(
+                "custom_texts needs one text per pair of significance_pairs."
+            )
+        pairs, texts = list(significance_pairs), list(custom_texts)
     else:
-        pairs = significance_pairs
-    stat_tests = [_get_stat_test(name) for name in tests]
-    texts = []
-    for first, second in pairs:
-        first_values = df_filtered.loc[df_filtered["Condition"] == first, column]
-        second_values = df_filtered.loc[df_filtered["Condition"] == second, column]
-        lines = []
-        for name, stat_test in zip(tests, stat_tests):
-            result = stat_test(first_values.dropna(), second_values.dropna())
-            if verbose:
-                print(f"{first} vs. {second}: {result.formatted_output}")
-            lines.append(_format_test_result(name, result))
-        texts.append("\n".join(lines))
+        tests = [test] if isinstance(test, str) else list(test)
+        df_filtered = df[df["Order"] == event_index]
+
+        print(
+            f"\nSample sizes (non-NaN) for event index {event_index}, column '{column}':"
+        )
+        if verbose:
+            for condition in conditions_to_plot:
+                condition_data = df_filtered[df_filtered["Condition"] == condition][
+                    column
+                ]
+                n = condition_data.notna().sum()
+                print(f"Condition {condition}: n={n}")
+
+        if significance_pairs is None:
+            pairs = list(combinations(df["Condition"].unique(), 2))
+        else:
+            pairs = significance_pairs
+        stat_tests = [_get_stat_test(name) for name in tests]
+        texts = []
+        for first, second in pairs:
+            first_values = df_filtered.loc[df_filtered["Condition"] == first, column]
+            second_values = df_filtered.loc[df_filtered["Condition"] == second, column]
+            lines = []
+            for name, stat_test in zip(tests, stat_tests):
+                result = stat_test(first_values.dropna(), second_values.dropna())
+                if verbose:
+                    print(f"{first} vs. {second}: {result.formatted_output}")
+                lines.append(_format_test_result(name, result))
+            texts.append("\n".join(lines))
 
     if shown_df is None:
         shown_df = df
@@ -547,6 +563,7 @@ def _plot_violinplot(
     hide_outliers: bool = False,
     inner: str | None = "box",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    custom_annotations: dict[int, tuple[list[tuple], list[str]]] | None = None,
 ) -> tuple[list[float], list[float]]:
     """
     Draw violin + swarm subplots for each ordering group.
@@ -576,6 +593,10 @@ def _plot_violinplot(
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier detection and metrics use the original
             values.  Defaults to ``None``.
+        custom_annotations (dict or None) : Precomputed brackets per ``"Order"``
+            value, as ``(pairs, texts)``.  When given, these are drawn instead of
+            running ``test``; groups without an entry or without pairs get no
+            brackets.  Defaults to ``None``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -666,17 +687,31 @@ def _plot_violinplot(
                     test=test,
                     display_transform=display_transform,
                 )
-            _annotate_significance(
-                df,
-                conditions_to_plot,
-                column,
-                violinplot,
-                significance_pairs,
-                event_index,
-                plot_type="violinplot",
-                test=test,
-                shown_df=shown_df,
-            )
+            if custom_annotations is None:
+                _annotate_significance(
+                    df,
+                    conditions_to_plot,
+                    column,
+                    violinplot,
+                    significance_pairs,
+                    event_index,
+                    plot_type="violinplot",
+                    test=test,
+                    shown_df=shown_df,
+                )
+            elif custom_annotations.get(event_index, ([], []))[0]:
+                pairs, texts = custom_annotations[event_index]
+                _annotate_significance(
+                    df,
+                    conditions_to_plot,
+                    column,
+                    violinplot,
+                    pairs,
+                    event_index,
+                    plot_type="violinplot",
+                    shown_df=shown_df,
+                    custom_texts=texts,
+                )
 
         min_y, max_y = current_ax.get_ylim()
         y_min.append(min_y)
