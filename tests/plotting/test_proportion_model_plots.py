@@ -285,7 +285,7 @@ def test_series_counts_follow_the_design(result, tables):
 
     ax = pmp.plot_offset_curves(result).axes[0]
     assert _gid_cells(ax, "offset|") == set(mutants)
-    assert _gid_cells(ax, "offset_markers|") == set(mutants)
+    assert _gid_cells(ax, "offset_markers|") == set(cells)
 
     ax = pmp.plot_genotype_interaction(result).axes[0]
     assert _gid_cells(ax, "line|") == {"WT", "abt7", "xyz"}
@@ -399,6 +399,14 @@ def test_percent_display_matches_model_log_ratios(result):
             markers.get_ydata(),
             log_ratio_to_percentage(positions["model_offset_mean"]),
         )
+    # the reference is its own baseline, so its model offset is exactly 0
+    (markers,) = (
+        a
+        for a in _with_gid(ax, f"offset_markers|{result.coding.reference_cell}")
+        if a.get_marker() == "o"
+    )
+    assert len(markers.get_ydata()) == len(MOLT_LOG_X)
+    np.testing.assert_allclose(markers.get_ydata(), 0, atol=1e-12)
 
     fig = pmp.plot_individual_consistency(result, 1, 3)
     deviations = result.worm_deviations("own")

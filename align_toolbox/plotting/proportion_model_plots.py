@@ -629,7 +629,7 @@ def plot_offset_curves(
     cell's overall ``log_x`` range, including gaps between reference molts, and
     dashed beyond it. Markers sit at the cell's mean ``log_x`` of each molt and
     show the observed or the model offset from ``molt_positions`` with its
-    interval.
+    interval; the reference cell gets markers too, around its line at 0.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
@@ -715,9 +715,10 @@ def plot_offset_curves(
             linewidth=1.5,
             gid=f"offset|{cell}",
         )
-        if markers is not None:
+    if markers is not None:
+        prefix = f"{markers}_offset"
+        for cell in [reference, *selected]:
             molts = positions[positions["cell"] == cell]
-            prefix = f"{markers}_offset"
             center = molts[f"{prefix}_mean_percent"].to_numpy()
             ax.errorbar(
                 np.exp(molts["log_x_mean"].to_numpy(dtype=float)),
@@ -729,7 +730,7 @@ def plot_offset_curves(
                 ),
                 fmt="o",
                 ms=4,
-                color=color,
+                color=color_of[cell],
                 capsize=2,
                 zorder=4,
                 gid=f"offset_markers|{cell}",
