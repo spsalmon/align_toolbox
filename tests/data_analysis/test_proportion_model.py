@@ -1,3 +1,6 @@
+import pickle
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pymc as pm
@@ -1331,3 +1334,337 @@ def test_fit_per_experiment_recovers_common_effects():
                 continue
             row = comparison.loc[(experiment, f"beta[condition[{condition_id}]]")]
             assert row["lower"] < CELLS[condition_id]["beta"] < row["upper"]
+
+
+# NAMES WITH PUNCTUATION
+
+COLON_FACTORS = {
+    0: {"yap1": "wild type", "tir": "no TIR"},
+    1: {"yap1": "abt7", "tir": "no TIR"},
+    2: {"yap1": "wild type", "tir": "col-10:TIR"},
+    3: {"yap1": "abt7", "tir": "col-10:TIR"},
+}
+COLON_REFERENCE = {"yap1": "wild type", "tir": "no TIR"}
+NAME_CHARACTERS = [":", ";", ",", "(", ")", "[", "]", "=", "+", "/", " ", "µ"]
+# 3 x 2 factorial without the (xyz, col-10) cell, with plain names
+PLAIN_FACTORS = {
+    0: {"yap1": "WT", "tir": "none"},
+    1: {"yap1": "abt7", "tir": "none"},
+    2: {"yap1": "xyz", "tir": "none"},
+    3: {"yap1": "WT", "tir": "col-10"},
+    4: {"yap1": "abt7", "tir": "col-10"},
+}
+PLAIN_REFERENCE = {"yap1": "WT", "tir": "none"}
+
+
+def test_level_with_colon_keeps_its_main_effect_and_interaction():
+    coding = pmod.build_genotype_coding(
+        list(COLON_FACTORS), COLON_FACTORS, COLON_REFERENCE
+    )
+    assert coding.effects == [
+        (("yap1", "abt7"),),
+        (("tir", "col-10:TIR"),),
+        (("yap1", "abt7"), ("tir", "col-10:TIR")),
+    ]
+    np.testing.assert_array_equal(coding.is_main_effect, [True, True, False])
+    np.testing.assert_array_equal(
+        coding.design_matrix([0, 1, 2, 3]).to_numpy(),
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 1]],
+    )
+
+    table = pd.concat(
+        [_reference_table({1: [1.0, 2.0]}, condition_id=c) for c in COLON_FACTORS],
+        ignore_index=True,
+    )
+    beta = np.array([0.10, 0.20, -0.05])
+    gamma = np.array([0.01, 0.02, 0.03])
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [1.0]),
+            "b": ((), [0.5]),
+            "beta": (("effect",), [beta]),
+            "gamma": (("effect",), [gamma]),
+        },
+        x_ref=2.0,
+    )
+    offsets = result.cell_offsets(log_x=3.0).set_index("cell")
+    double = offsets.loc["yap1=abt7, tir=col-10:TIR"]
+    assert double["expected_mean"] == pytest.approx(0.10 + 0.20 + 0.01 + 0.02)
+    assert double["interaction_mean"] == pytest.approx(-0.05 + 0.03)
+    tir = offsets.loc["yap1=wild type, tir=col-10:TIR"]
+    assert tir["offset_mean"] == pytest.approx(0.22)
+    assert np.isnan(tir["interaction_mean"])
+
+
+def _punctuated(factors, reference, character):
+    """Rename every factor and level of a coding to contain ``character``."""
+
+    def rename(name):
+        return f"{name}{character}x{character}"
+
+    return (
+        {
+            c: {rename(f): rename(level) for f, level in levels.items()}
+            for c, levels in factors.items()
+        },
+        {rename(f): rename(level) for f, level in reference.items()},
+        rename,
+    )
+
+
+@pytest.mark.parametrize("character", NAME_CHARACTERS)
+def test_coding_with_punctuated_names_matches_plain_coding(character):
+    factors, reference, rename = _punctuated(PLAIN_FACTORS, PLAIN_REFERENCE, character)
+    plain = pmod.build_genotype_coding(
+        list(PLAIN_FACTORS), PLAIN_FACTORS, PLAIN_REFERENCE
+    )
+    coding = pmod.build_genotype_coding(list(factors), factors, reference)
+
+    assert coding.effects == [
+        tuple((rename(f), rename(level)) for f, level in effect)
+        for effect in plain.effects
+    ]
+    np.testing.assert_array_equal(coding.is_main_effect, plain.is_main_effect)
+    np.testing.assert_array_equal(
+        coding.design_matrix(list(factors)).to_numpy(),
+        plain.design_matrix(list(factors)).to_numpy(),
+    )
+    assert coding.cells == [
+        ", ".join(f"{rename(f)}={rename(level)}" for f, level in levels.items())
+        for levels in plain.cell_levels
+    ]
+    for condition_id, levels in factors.items():
+        np.testing.assert_array_equal(
+            coding.effect_vector(levels),
+            plain.effect_vector(PLAIN_FACTORS[condition_id]),
+        )
+        label = coding.cell_of_condition(condition_id)
+        for cell in (condition_id, label, levels):
+            assert coding.resolve_cell(cell) == levels
+    with pytest.raises(ValueError, match="fitted cells"):
+        coding.resolve_cell(rename("absent"))
+
+
+def test_effects_with_the_same_label_raise():
+    # the level "1]:y[2" makes the main effect read like the interaction x[1]:y[2]
+    factors = {
+        0: {"x": "0", "y": "0"},
+        1: {"x": "1]:y[2", "y": "0"},
+        2: {"x": "1", "y": "0"},
+        3: {"x": "0", "y": "2"},
+        4: {"x": "1", "y": "2"},
+    }
+    with pytest.raises(ValueError, match=r"effects .*'x\[1\]:y\[2\]'"):
+        pmod.build_genotype_coding(list(factors), factors, {"x": "0", "y": "0"})
+
+
+def test_cells_with_the_same_label_raise():
+    factors = {
+        0: {"a": "0", "b": "0"},
+        1: {"a": "1, b=2", "b": "3"},
+        2: {"a": "1", "b": "2, b=3"},
+    }
+    with pytest.raises(ValueError, match="cells .*'a=1, b=2, b=3'"):
+        pmod.build_genotype_coding(list(factors), factors, {"a": "0", "b": "0"})
+
+
+def test_summary_kind_effect_and_cell_columns_with_bracketed_names():
+    factors = {
+        0: {"yap[1]": "WT", "tir:": "none"},
+        1: {"yap[1]": "abt[7]:x", "tir:": "none"},
+        2: {"yap[1]": "WT", "tir:": "col-10:TIR"},
+        3: {"yap[1]": "abt[7]:x", "tir:": "col-10:TIR"},
+    }
+    coding = pmod.build_genotype_coding(
+        list(factors), factors, {"yap[1]": "WT", "tir:": "none"}
+    )
+    table = pd.concat(
+        [_reference_table({1: [1.0, 2.0]}, condition_id=c) for c in factors],
+        ignore_index=True,
+    )
+    beta = np.array([0.1, 0.2, 0.3])
+    tau = np.array([0.01, 0.02, 0.03, 0.04])
+    posterior = {
+        "a": ((), [1.0]),
+        "b": ((), [0.5]),
+        "beta": (("effect",), [beta]),
+        "gamma": (("effect",), [-beta]),
+        "experiment_effect": (("experiment",), [[0.01, -0.01]]),
+        "nu": ((), [4.0]),
+        "tau": (("cell",), [tau]),
+        "sigma": (("cell",), [2 * tau]),
+    }
+    result = _result(
+        table,
+        coding,
+        posterior,
+        x_ref=1.5,
+        group_variances=True,
+        likelihood="student_t",
+    )
+    summary = result.summary()
+    assert list(summary.columns[:4]) == ["parameter", "kind", "effect", "cell"]
+
+    def rows(kind):
+        return summary[summary["kind"] == kind]
+
+    interaction = "yap[1][abt[7]:x]:tir:[col-10:TIR]"
+    assert rows("beta")["effect"].tolist() == [
+        "yap[1][abt[7]:x]",
+        "tir:[col-10:TIR]",
+        interaction,
+    ]
+    np.testing.assert_allclose(rows("beta")["mean"], beta)
+    np.testing.assert_allclose(rows("gamma")["mean"], -beta)
+    assert rows("beta")["cell"].isna().all()
+    assert rows("beta")["parameter"].iloc[2] == f"beta[{interaction}]"
+    assert rows("experiment_effect")[["effect", "cell"]].isna().all().all()
+    assert len(rows("experiment_effect")) == 2
+    for kind in ("tau", "sigma", "sigma_sd"):
+        assert rows(kind)["cell"].tolist() == coding.cells
+        assert rows(kind)["effect"].isna().all()
+    np.testing.assert_allclose(rows("tau")["mean"], tau)
+    for kind in ("tau_ratio", "sigma_ratio"):
+        assert rows(kind)["cell"].tolist() == coding.cells[1:]
+        np.testing.assert_allclose(rows(kind)["mean"], tau[1:] / tau[0])
+    for kind in ("a", "b", "nu", "sigma_sd_undefined_fraction"):
+        assert len(rows(kind)) == 1
+        assert rows(kind)[["effect", "cell"]].isna().all().all()
+
+    comparison = pmod.compare_experiments({"E1": result})
+    assert (
+        comparison["kind"].tolist()
+        == ["beta"] * 3 + ["gamma"] * 3 + ["tau_ratio"] * 3 + ["sigma_ratio"] * 3
+    )
+    assert comparison["effect"].iloc[:6].tolist() == rows("beta")["effect"].tolist() * 2
+    assert comparison["cell"].iloc[6:].tolist() == coding.cells[1:] * 2
+
+
+def test_molt_dispersion_families_do_not_merge_comparisons_with_the_same_text():
+    # both comparisons read "g=a vs g=b vs g=c"
+    factors = {
+        0: {"g": "a"},
+        1: {"g": "a vs g=b"},
+        2: {"g": "b vs g=c"},
+        3: {"g": "c"},
+    }
+    coding = pmod.build_genotype_coding(list(factors), factors, {"g": "a"})
+    rng = np.random.default_rng(0)
+    table = pd.DataFrame(
+        [
+            {
+                "condition_id": c,
+                "worm_id": f"c{c}_w{w}",
+                "experiment": "E1",
+                "molt": molt,
+                "log_x": 1.0 + molt,
+                "log_y": rng.normal(0, 0.1),
+            }
+            for c in factors
+            for w in range(6)
+            for molt in (1, 2)
+        ]
+    )
+    result = _result(
+        table,
+        coding,
+        {
+            "a": ((), [0.0]),
+            "b": ((), [0.0]),
+            "beta": (("effect",), [np.zeros(3)]),
+            "gamma": (("effect",), [np.zeros(3)]),
+        },
+        x_ref=1.5,
+    )
+    tests = result.molt_dispersion_tests(
+        [(1, 3), ({"g": "a"}, "g=b vs g=c")], family="comparison"
+    )
+    assert tests["comparison"].nunique() == 1
+    assert (tests["family_size"] == 2).all()
+
+
+def _old_coding(coding, effect_names):
+    """A coding as pickled before effects were structured: names only."""
+    old = object.__new__(pmod.GenotypeCoding)
+    old.__dict__.update(
+        factor_names=coding.factor_names,
+        reference=coding.reference,
+        levels=coding.levels,
+        condition_levels=coding.condition_levels,
+        effect_names=effect_names,
+        cells=coding.cells,
+    )
+    return old
+
+
+@pytest.mark.parametrize(
+    "factors, reference, old_effects",
+    [
+        (FACTORS_2X2, REFERENCE_2X2, None),
+        # the old coding dropped the effects whose level contains ":"
+        (COLON_FACTORS, COLON_REFERENCE, ["yap1[abt7]"]),
+    ],
+)
+def test_results_pickled_with_the_old_coding_load(factors, reference, old_effects):
+    coding = pmod.build_genotype_coding(list(factors), factors, reference)
+    effect_names = coding.effect_names if old_effects is None else old_effects
+    table = pd.concat(
+        [_reference_table({1: [1.0, 2.0]}, condition_id=c) for c in factors],
+        ignore_index=True,
+    )
+    n_effects = len(effect_names)
+    result = _result(
+        table,
+        SimpleNamespace(effect_names=effect_names, cells=coding.cells),
+        {
+            "a": ((), [1.0]),
+            "b": ((), [0.5]),
+            "tau": ((), [0.1]),
+            "sigma": ((), [0.1]),
+            "beta": (("effect",), [0.1 * np.arange(1, n_effects + 1)]),
+            "gamma": (("effect",), [np.zeros(n_effects)]),
+        },
+        x_ref=1.5,
+    )
+    result.coding = _old_coding(coding, effect_names)
+
+    loaded = pickle.loads(pickle.dumps(result))
+    assert loaded.coding == coding
+    if old_effects is None:
+        summary = loaded.summary()
+        np.testing.assert_allclose(
+            summary.loc[summary["kind"] == "beta", "mean"], [0.1, 0.2, 0.3]
+        )
+        assert pickle.loads(pickle.dumps(loaded)).coding == coding
+    else:
+        with pytest.raises(ValueError, match="must be refitted"):
+            loaded.summary()
+        with pytest.raises(ValueError, match="must be refitted"):
+            loaded.cell_offsets()
+
+
+@pytest.mark.slow
+def test_fit_recovers_interaction_of_level_with_colon():
+    beta = {0: 0.0, 1: 0.10, 2: -0.05, 3: 0.10 - 0.05 + 0.08}
+    cells = {c: _cell(80, beta[c]) for c in COLON_FACTORS}
+    result = _fit_simulated(
+        cells,
+        seed=11,
+        factors=COLON_FACTORS,
+        reference=COLON_REFERENCE,
+        reference_condition=None,
+        reference_shape="linear",
+    )
+    summary = result.summary()
+    interaction = summary[
+        (summary["kind"] == "beta")
+        & (summary["effect"] == "yap1[abt7]:tir[col-10:TIR]")
+    ].iloc[0]
+    assert interaction["lower"] < 0.08 < interaction["upper"]
+    assert interaction["lower"] > 0
+    offsets = result.cell_offsets().set_index("cell")
+    double = offsets.loc["yap1=abt7, tir=col-10:TIR"]
+    assert double["interaction_lower"] < 0.08 < double["interaction_upper"]
+    assert double["expected_lower"] < 0.05 < double["expected_upper"]

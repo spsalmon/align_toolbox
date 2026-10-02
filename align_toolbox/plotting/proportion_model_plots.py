@@ -43,8 +43,9 @@ DEFAULT_PANEL_COLUMNS = 4
 
 DEFAULT_X_NAME = "Body size"
 DEFAULT_Y_NAME = "Organ size"
-DEFAULT_PARAMETERS = r"^beta\["
+DEFAULT_KINDS = ("beta",)
 DISPLAYS = ("percent", "log")
+RATIO_KINDS = ("tau_ratio", "sigma_ratio")
 
 EXPERIMENT_MARKERS = ("o", "s", "^", "D", "v", "P", "X", "<", ">")
 MISFIT_STYLES = {"line": ("o", "0.15"), "spline": ("s", "0.55")}
@@ -371,20 +372,26 @@ def _select_parameters(
     Select rows of a summary-like table by parameter name.
 
     Parameters:
-        table (pd.DataFrame): Table with a ``parameter`` column.
+        table (pd.DataFrame): Table with ``parameter`` and ``kind`` columns.
         parameters (list[str], str or None): Exact names (kept in the given
             order), a regular expression searched in each name, or ``None`` for
-            ``DEFAULT_PARAMETERS``.
+            the rows whose ``kind`` is in ``DEFAULT_KINDS``.
 
     Returns:
         pd.DataFrame: The selected rows.
 
     Raises:
-        ValueError: If listed names are missing or nothing matches.
+        ValueError: If the table has no ``kind`` column, listed names are
+            missing or nothing matches.
     """
+    if "kind" not in table.columns:
+        raise ValueError(
+            "The table has no `kind` column; recompute it with "
+            "ProportionModelResult.summary or compare_experiments."
+        )
     if parameters is None:
-        parameters = DEFAULT_PARAMETERS
-    if isinstance(parameters, str):
+        selected = table[table["kind"].isin(DEFAULT_KINDS)]
+    elif isinstance(parameters, str):
         selected = table[table["parameter"].str.contains(parameters, regex=True)]
     else:
         order = {name: i for i, name in enumerate(parameters)}
@@ -402,7 +409,7 @@ def _select_parameters(
 
 def _display_values(rows: pd.DataFrame, display: str) -> dict[str, np.ndarray]:
     """``mean``, ``lower`` and ``upper`` to draw: the ``_percent`` columns of beta rows for ``"percent"``, raw values otherwise."""
-    is_beta = rows["parameter"].str.startswith("beta[").to_numpy()
+    is_beta = (rows["kind"] == "beta").to_numpy()
     values = {}
     for key in ("mean", "lower", "upper"):
         values[key] = rows[key].to_numpy(dtype=float)
@@ -412,10 +419,10 @@ def _display_values(rows: pd.DataFrame, display: str) -> dict[str, np.ndarray]:
     return values
 
 
-def _effect_axis(parameters: pd.Series, display: str) -> tuple[str, float]:
-    """Default axis label and null value for a set of summary parameters."""
-    is_beta = parameters.str.startswith("beta[")
-    if parameters.str.contains(r"_ratio\[", regex=True).all():
+def _effect_axis(kinds: pd.Series, display: str) -> tuple[str, float]:
+    """Default axis label and null value for summary rows of the given ``kind``."""
+    is_beta = kinds == "beta"
+    if kinds.isin(RATIO_KINDS).all():
         return f"Ratio to reference cell ({INTERVAL_LABEL})", 1.0
     if display == "percent" and is_beta.all():
         return f"Offset at x_ref (%, {INTERVAL_LABEL})", 0.0
@@ -967,12 +974,13 @@ def plot_variance_components(
     fig, axes, owns_figure = _panel_axes(
         2 if show_repeatability else 1, ax, ax_size, default_size=DEFAULT_AX_SIZE
     )
-    summary = result.summary().set_index("parameter")
+    summary = result.summary()
+    ratios = summary[summary["kind"].isin(RATIO_KINDS)].set_index(["kind", "cell"])
 
     ratio_ax = axes[0]
     for i, cell in enumerate(selected):
         for name, shift, marker in (("tau", -0.12, "o"), ("sigma", 0.12, "s")):
-            row = summary.loc[f"{name}_ratio[{cell}]"]
+            row = ratios.loc[(f"{name}_ratio", cell)]
             ratio_ax.errorbar(
                 i + shift,
                 row["mean"],
@@ -1388,7 +1396,7 @@ def plot_effects_forest(
     if rows.empty:
         raise ValueError(f"No row matching {parameters!r} has an interval.")
     values = _display_values(rows, display)
-    default_label, null_value = _effect_axis(rows["parameter"], display)
+    default_label, null_value = _effect_axis(rows["kind"], display)
     fig, ax, owns_figure = _single_axes(
         ax, ax_size, default_size=(3.5, max(1.2, 0.3 * len(rows)))
     )
@@ -1725,7 +1733,9 @@ def plot_experiment_consistency(
     experiments = list(dict.fromkeys(rows["experiment"]))
     row_of = {name: len(names) - 1 - i for i, name in enumerate(names)}
     spread = 0.5 / max(len(experiments), 1)
-    default_label, null_value = _effect_axis(pd.Series(names), display)
+    default_label, null_value = _effect_axis(
+        rows.drop_duplicates("parameter")["kind"], display
+    )
     fig, ax, owns_figure = _single_axes(
         ax, ax_size, default_size=(3.5, max(1.2, 0.45 * len(names)))
     )

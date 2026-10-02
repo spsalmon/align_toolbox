@@ -44,10 +44,10 @@ def _simulate_table(coding, rng):
     """Every worm at 4 molts, except worm 0 of each condition, which misses molt 2."""
     rows = []
     worm_effects = {}
-    for condition_id in FACTORS:
+    for condition_id, levels in coding.condition_levels.items():
         cell = coding.cell_of_condition(condition_id)
         k = coding.cells.index(cell)
-        d = coding.effect_vector(FACTORS[condition_id])
+        d = coding.effect_vector(levels)
         for worm in range(N_WORMS):
             worm_id = f"c{condition_id}_w{worm}"
             worm_effects[worm_id] = rng.normal(0, TAU[k])
@@ -90,11 +90,10 @@ def _simulate_table(coding, rng):
     return table, x_ref, worm_effects
 
 
-@pytest.fixture(scope="module")
-def result():
+def _synthetic_result(factors, reference):
     """A Student-t, group-variance, spline-reference fit built from synthetic draws."""
     rng = np.random.default_rng(0)
-    coding = pmod.build_genotype_coding(list(FACTORS), FACTORS, REFERENCE)
+    coding = pmod.build_genotype_coding(list(factors), factors, reference)
     table, x_ref, worm_effects = _simulate_table(coding, rng)
     reference_log_x = table.loc[table["condition_id"] == 0, "log_x"].to_numpy()
     basis = pmod._build_spline_basis(reference_log_x, x_ref, n_knots=4)
@@ -161,7 +160,11 @@ def result():
 
 
 @pytest.fixture(scope="module")
-def tables(result):
+def result():
+    return _synthetic_result(FACTORS, REFERENCE)
+
+
+def _model_tables(result):
     """The expensive model tables, computed once on a few draws."""
     residuals = result.posterior_predictive_residuals(n_draws=20)
     return SimpleNamespace(
@@ -174,6 +177,11 @@ def tables(result):
             "E2": replace(result, random_seed=1),
         },
     )
+
+
+@pytest.fixture(scope="module")
+def tables(result):
+    return _model_tables(result)
 
 
 def _calls(result, tables):
@@ -587,3 +595,142 @@ def test_molt_dispersion_brackets_show_holm_adjusted_p(result, tables):
             t.get_text() for t in ax.texts if t.get_text().startswith("p =")
         )
         assert brackets == sorted(f"p = {p:.2g}" for p in tested["p_holm"])
+
+
+# NAMES WITH PUNCTUATION
+
+PUNCTUATED_FACTOR_NAMES = {"yap1": "yap-1 (allele; a:b)", "tir": "TIR: driver, line"}
+PUNCTUATED_LEVELS = {
+    "WT": "wild type",
+    # sorts like the plain names, so effects keep their order
+    "abt7": "abt7(yap-1); col-10:TIR",
+    "xyz": "unc-119(+), x:y",
+    "none": "no TIR",
+    "col-10": "col-10:TIR",
+}
+
+
+def _punctuate(levels):
+    return {
+        PUNCTUATED_FACTOR_NAMES[name]: PUNCTUATED_LEVELS[level]
+        for name, level in levels.items()
+    }
+
+
+@pytest.fixture(scope="module")
+def punctuated_result():
+    return _synthetic_result(
+        {c: _punctuate(levels) for c, levels in FACTORS.items()},
+        _punctuate(REFERENCE),
+    )
+
+
+@pytest.fixture(scope="module")
+def punctuated_tables(punctuated_result):
+    return _model_tables(punctuated_result)
+
+
+@pytest.mark.parametrize("name", PLOTS)
+def test_plot_works_with_punctuated_names(punctuated_result, punctuated_tables, name):
+    plot, n_axes = _calls(punctuated_result, punctuated_tables)[name]
+    fig = plot()
+    assert len([ax for ax in fig.axes if ax.axison]) == n_axes
+
+
+def test_punctuated_names_give_the_same_values_as_plain_names(
+    result, punctuated_result
+):
+    plain = result.cell_offsets()
+    punctuated = punctuated_result.cell_offsets()
+    assert punctuated["cell"].tolist() == punctuated_result.coding.cells
+    np.testing.assert_allclose(
+        punctuated["offset_mean"].to_numpy(), plain["offset_mean"].to_numpy()
+    )
+    np.testing.assert_allclose(
+        punctuated["interaction_mean"].to_numpy(),
+        plain["interaction_mean"].to_numpy(),
+    )
+
+
+def test_colors_and_labels_keyed_by_punctuated_cell_labels(punctuated_result):
+    coding = punctuated_result.coding
+    cell = coding.cell_of_condition(4)
+    fig = pmp.plot_offset_curves(
+        punctuated_result, colors={cell: "#ff0000"}, labels={cell: "double"}
+    )
+    ax = fig.axes[0]
+    line, *_ = _with_gid(ax, f"offset|{cell}")
+    assert to_rgba(line.get_color()) == to_rgba("#ff0000")
+    assert "double" in [t.get_text() for t in ax.get_legend().get_texts()]
+
+    fig = pmp.plot_proportion_scaling(
+        punctuated_result, cells=[cell, coding.reference_cell]
+    )
+    assert _gid_cells(fig.axes[0], "molts|") == {cell, coding.reference_cell}
+
+
+def test_interaction_plot_with_punctuated_factor_names(punctuated_result):
+    yap1, tir = PUNCTUATED_FACTOR_NAMES.values()
+    ax = pmp.plot_genotype_interaction(
+        punctuated_result, x_factor=yap1, line_factor=tir, annotate_interaction=True
+    ).axes[0]
+    assert _gid_cells(ax, "line|") == {"no TIR", "col-10:TIR"}
+    assert [t.get_text() for t in ax.get_xticklabels()] == [
+        PUNCTUATED_LEVELS[level] for level in ("WT", "abt7", "xyz")
+    ]
+    offsets = punctuated_result.cell_offsets().set_index("cell")
+    (line,) = _with_gid(ax, "line|col-10:TIR")
+    np.testing.assert_allclose(
+        line.get_ydata(),
+        [
+            offsets.loc[punctuated_result.coding.cell_of_condition(c)][
+                "offset_mean_percent"
+            ]
+            for c in (3, 4, 5)
+        ],
+    )
+    assert _gid_cells(ax, "interaction|") == {
+        punctuated_result.coding.cell_of_condition(c) for c in (4, 5)
+    }
+
+
+def test_molt_dispersion_with_punctuated_comparisons(punctuated_result):
+    coding = punctuated_result.coding
+    comparisons = [
+        (coding.cell_of_condition(4), coding.cell_of_condition(1)),
+        (_punctuate(FACTORS[2]), 0),
+    ]
+    fig = pmp.plot_molt_dispersion(
+        punctuated_result, comparisons=comparisons, show_swarm=False
+    )
+    legend = [text.get_text() for text in fig.legends[0].get_texts()]
+    assert legend == [coding.cell_of_condition(c) for c in (0, 1, 2, 4)]
+    tests = punctuated_result.molt_dispersion_tests(comparisons)
+    for ax, molt in zip(fig.axes, sorted(MOLT_LOG_X)):
+        tested = tests[(tests["molt"] == molt) & tests["p_holm"].notna()]
+        brackets = sorted(
+            t.get_text() for t in ax.texts if t.get_text().startswith("p =")
+        )
+        assert brackets == sorted(f"p = {p:.2g}" for p in tested["p_holm"])
+
+
+def test_effects_selected_by_exact_punctuated_names(punctuated_result):
+    summary = punctuated_result.summary()
+    names = [
+        summary.loc[summary["kind"] == "gamma", "parameter"].iloc[-1],
+        summary.loc[summary["kind"] == "beta", "parameter"].iloc[0],
+    ]
+    ax = pmp.plot_effects_forest(punctuated_result, parameters=names).axes[0]
+    assert [t.get_text() for t in ax.get_yticklabels()] == names
+    (points,) = _with_gid(ax, "effects")
+    rows = summary.set_index("parameter").loc[names]
+    np.testing.assert_allclose(
+        points.get_xdata(), [rows["mean"].iloc[0], rows["mean_percent"].iloc[1]]
+    )
+
+    experiments = {"E1": punctuated_result, "E2": punctuated_result}
+    ax = pmp.plot_experiment_consistency(
+        experiments, parameters=names, pooled=punctuated_result
+    ).axes[0]
+    assert [t.get_text() for t in ax.get_yticklabels()] == names
+    assert _gid_cells(ax, "pooled|") == set(names)

@@ -179,11 +179,74 @@ def build_proportion_table(
 
 # GENOTYPE CODING
 
+Effect = tuple[tuple[str, str], ...]
+
+
+def _effect_label(effect: Effect) -> str:
+    """Display name of an effect, e.g. ``"yap1[abt7]:tir[col-10]"``."""
+    return ":".join(f"{factor}[{level}]" for factor, level in effect)
+
+
+def _cell_label(factor_names: list[str], levels: dict[str, str]) -> str:
+    """Display label of a genotype cell, e.g. ``"yap1=abt7, tir=col-10"``."""
+    return ", ".join(f"{name}={levels[name]}" for name in factor_names)
+
+
+def _effect_is_active(effect: Effect, levels: dict[str, str]) -> bool:
+    """Whether every (factor, level) pair of ``effect`` matches ``levels``."""
+    return all(
+        factor in levels and str(levels[factor]) == level for factor, level in effect
+    )
+
+
+def _derive_effects_and_cells(
+    factor_names: list[str],
+    reference: dict[str, str],
+    levels: dict[str, list[str]],
+    condition_levels: dict[int, dict[str, str]],
+) -> tuple[list[Effect], list[dict[str, str]]]:
+    """
+    Derive the informed effects and the observed cells of a treatment coding.
+
+    Parameters:
+        factor_names (list[str]): Factor names.
+        reference (dict[str, str]): Reference level of each factor.
+        levels (dict[str, list[str]]): Levels of each factor, reference first.
+        condition_levels (dict[int, dict[str, str]]): Factor levels of each
+            coded condition.
+
+    Returns:
+        tuple[list[Effect], list[dict[str, str]]]: Every main effect and
+            interaction active in at least one condition, by increasing order,
+            and the levels of each distinct cell in condition order, reference
+            first.
+    """
+    candidates = [
+        tuple(zip(combo, combo_levels))
+        for order in range(1, len(factor_names) + 1)
+        for combo in combinations(factor_names, order)
+        for combo_levels in product(*(levels[name][1:] for name in combo))
+    ]
+    effects = [
+        effect
+        for effect in candidates
+        if any(_effect_is_active(effect, lv) for lv in condition_levels.values())
+    ]
+    cell_levels = []
+    for c in sorted(condition_levels, key=lambda c: condition_levels[c] != reference):
+        if condition_levels[c] not in cell_levels:
+            cell_levels.append(dict(condition_levels[c]))
+    return effects, cell_levels
+
 
 @dataclass
 class GenotypeCoding:
     """
     Treatment coding of genotype factors with all interactions.
+
+    Effects and cells are stored structurally; their names are display labels
+    derived from the structure and never parsed, so factor and level names may
+    contain any character.
 
     Attributes:
         factor_names (list[str]): Factor names, in the order of ``reference``.
@@ -191,22 +254,54 @@ class GenotypeCoding:
         levels (dict[str, list[str]]): Levels of each factor, reference first.
         condition_levels (dict[int, dict[str, str]]): Factor levels of each
             coded condition.
-        effect_names (list[str]): Names of the design columns, e.g.
-            ``"yap1[abt7]"`` or ``"yap1[abt7]:tir[col-10]"``.
-        cells (list[str]): Labels of the observed genotype cells, reference first.
+        effects (list[tuple[tuple[str, str], ...]]): Design columns, each a tuple
+            of ``(factor, level)`` pairs: one pair for a main effect, several for
+            an interaction.
+        cell_levels (list[dict[str, str]]): Factor levels of the observed
+            genotype cells, reference first.
     """
 
     factor_names: list[str]
     reference: dict[str, str]
     levels: dict[str, list[str]]
     condition_levels: dict[int, dict[str, str]]
-    effect_names: list[str]
-    cells: list[str]
+    effects: list[Effect]
+    cell_levels: list[dict[str, str]]
+
+    def __setstate__(self, state: dict) -> None:
+        # codings pickled before effects were structured stored their names only
+        if "effects" not in state:
+            state = {
+                key: state[key]
+                for key in ("factor_names", "reference", "levels", "condition_levels")
+            }
+            state["effects"], state["cell_levels"] = _derive_effects_and_cells(
+                state["factor_names"],
+                state["reference"],
+                state["levels"],
+                state["condition_levels"],
+            )
+        self.__dict__.update(state)
+
+    @property
+    def effect_names(self) -> list[str]:
+        """Display names of the design columns, e.g. ``"yap1[abt7]:tir[col-10]"``."""
+        return [_effect_label(effect) for effect in self.effects]
+
+    @property
+    def is_main_effect(self) -> np.ndarray:
+        """Boolean vector of shape ``(n_effects,)``, ``True`` for main effects."""
+        return np.array([len(effect) == 1 for effect in self.effects], dtype=bool)
+
+    @property
+    def cells(self) -> list[str]:
+        """Labels of the observed genotype cells, reference first."""
+        return [self.cell_label(levels) for levels in self.cell_levels]
 
     @property
     def reference_cell(self) -> str:
         """Label of the cell where every factor is at its reference level."""
-        return self.cells[0]
+        return self.cell_label(self.cell_levels[0])
 
     def cell_label(self, levels: dict[str, str]) -> str:
         """
@@ -218,7 +313,7 @@ class GenotypeCoding:
         Returns:
             str: Label such as ``"yap1=abt7, tir=col-10"``.
         """
-        return ", ".join(f"{name}={levels[name]}" for name in self.factor_names)
+        return _cell_label(self.factor_names, levels)
 
     def cell_of_condition(self, condition_id: int) -> str:
         """
@@ -236,18 +331,17 @@ class GenotypeCoding:
         """
         Return the design row of a genotype cell.
 
+        An effect is active when every ``(factor, level)`` pair in it matches
+        ``levels``.
+
         Parameters:
             levels (dict[str, str]): Level of each factor.
 
         Returns:
             np.ndarray: 0/1 vector of shape ``(n_effects,)``.
         """
-        active = {f"{name}[{levels[name]}]" for name in self.factor_names}
         return np.array(
-            [
-                float(all(term in active for term in e.split(":")))
-                for e in self.effect_names
-            ]
+            [float(_effect_is_active(effect, levels)) for effect in self.effects]
         )
 
     def design_matrix(self, condition_ids: list[int]) -> pd.DataFrame:
@@ -259,10 +353,12 @@ class GenotypeCoding:
 
         Returns:
             pd.DataFrame: One row per condition (indexed by ``condition_id``) and
-                one 0/1 column per effect.
+                one 0/1 column per effect, named by ``effect_names``.
         """
         return pd.DataFrame(
-            [self.effect_vector(self.condition_levels[c]) for c in condition_ids],
+            np.array(
+                [self.effect_vector(self.condition_levels[c]) for c in condition_ids]
+            ).reshape(len(condition_ids), len(self.effects)),
             index=pd.Index(condition_ids, name="condition_id"),
             columns=self.effect_names,
         )
@@ -272,8 +368,8 @@ class GenotypeCoding:
         Return the factor levels of a fitted genotype cell.
 
         Parameters:
-            cell (int, str or dict[str, str]): A condition id, a cell label, or the
-                factor levels of the cell.
+            cell (int, str or dict[str, str]): A condition id, an exact cell
+                label, or the factor levels of the cell.
 
         Returns:
             dict[str, str]: Level of each factor.
@@ -283,20 +379,43 @@ class GenotypeCoding:
         """
         if isinstance(cell, dict):
             levels = {name: str(cell.get(name)) for name in self.factor_names}
+            if levels not in self.cell_levels:
+                levels = None
         elif isinstance(cell, str):
-            levels = next(
-                (
-                    lv
-                    for lv in self.condition_levels.values()
-                    if self.cell_label(lv) == cell
-                ),
-                None,
-            )
+            labels = self.cells
+            levels = self.cell_levels[labels.index(cell)] if cell in labels else None
         else:
             levels = self.condition_levels.get(int(cell))
-        if levels is None or self.cell_label(levels) not in self.cells:
+            if levels is not None and levels not in self.cell_levels:
+                levels = None
+        if levels is None:
             raise ValueError(f"{cell!r} is not one of the fitted cells {self.cells}.")
-        return levels
+        return dict(levels)
+
+
+def _check_unique_labels(coding: GenotypeCoding) -> None:
+    """
+    Check that distinct effects and distinct cells get distinct display labels.
+
+    Parameters:
+        coding (GenotypeCoding): Coding to check.
+
+    Raises:
+        ValueError: If two effects or two cells share a label.
+    """
+    for kind, items, labels in (
+        ("effects", coding.effects, coding.effect_names),
+        ("cells", coding.cell_levels, coding.cells),
+    ):
+        first_of = {}
+        for item, label in zip(items, labels):
+            if label in first_of:
+                raise ValueError(
+                    f"The genotype {kind} {first_of[label]!r} and {item!r} would both "
+                    f"be labelled {label!r}; rename a factor or level so that their "
+                    "labels differ."
+                )
+            first_of[label] = item
 
 
 def build_genotype_coding(
@@ -328,7 +447,8 @@ def build_genotype_coding(
 
     Raises:
         ValueError: If the reference is missing, a condition is not coded or
-            lacks a factor, or no condition sits in the reference cell.
+            lacks a factor, no condition sits in the reference cell, or two
+            distinct effects or cells would get the same label.
     """
     condition_ids = [int(c) for c in condition_ids]
     if factors is None:
@@ -372,28 +492,18 @@ def build_genotype_coding(
         for name in factor_names
     }
 
-    candidate_effects = [
-        ":".join(f"{name}[{level}]" for name, level in zip(combo, combo_levels))
-        for order in range(1, len(factor_names) + 1)
-        for combo in combinations(factor_names, order)
-        for combo_levels in product(*(levels[name][1:] for name in combo))
-    ]
-    cells = []
-    for c in sorted(condition_levels, key=lambda c: condition_levels[c] != reference):
-        label = ", ".join(f"{n}={condition_levels[c][n]}" for n in factor_names)
-        if label not in cells:
-            cells.append(label)
-
+    effects, cell_levels = _derive_effects_and_cells(
+        factor_names, reference, levels, condition_levels
+    )
     coding = GenotypeCoding(
         factor_names=factor_names,
         reference=reference,
         levels=levels,
         condition_levels=condition_levels,
-        effect_names=candidate_effects,
-        cells=cells,
+        effects=effects,
+        cell_levels=cell_levels,
     )
-    design = coding.design_matrix(condition_ids)
-    coding.effect_names = [e for e in candidate_effects if design[e].any()]
+    _check_unique_labels(coding)
 
     cell_design = coding.design_matrix(condition_ids).drop_duplicates().to_numpy()
     cell_design = np.column_stack([np.ones(len(cell_design)), cell_design])
@@ -628,8 +738,33 @@ class ProportionModelResult:
     spline_misfit: pd.DataFrame | None = None
     linearity_threshold: float | None = None
 
+    def _check_coding(self) -> None:
+        """
+        Check that the coding's effects and cells are those the posterior was sampled with.
+
+        Raises:
+            ValueError: If they differ, e.g. for a result pickled by a version
+                that dropped the effects of levels containing ``":"``.
+        """
+        posterior = self.idata["posterior"]
+        for dim, labels in (
+            ("effect", self.coding.effect_names),
+            ("cell", self.coding.cells),
+        ):
+            if dim not in posterior.coords:
+                continue
+            fitted = [str(v) for v in posterior.coords[dim].values]
+            if fitted != labels:
+                raise ValueError(
+                    f"The genotype coding has {dim}s {labels} but the model was "
+                    f"fitted with {dim}s {fitted}. The model was fitted with a "
+                    "version of align_toolbox that dropped effects of factor or "
+                    "level names containing ':' and must be refitted."
+                )
+
     def _draws(self, name: str, index: np.ndarray | None = None) -> np.ndarray:
         """Posterior draws of ``name`` with chains and draws flattened to axis 0, optionally subset by ``index``."""
+        self._check_coding()
         values = self.idata["posterior"][name].values
         values = values.reshape(-1, *values.shape[2:])
         return values if index is None else values[index]
@@ -663,16 +798,27 @@ class ProportionModelResult:
         shared by all cells.
 
         Returns:
-            pd.DataFrame: Columns ``parameter``, ``mean``, ``lower``, ``upper``,
-                ``mean_percent``, ``lower_percent`` and ``upper_percent``; the
-                percent columns are NaN except for ``beta`` rows.
+            pd.DataFrame: Columns ``parameter`` (display name, e.g.
+                ``"beta[yap1[abt7]]"``), ``kind`` (``"a"``, ``"b"``, ``"sd_s"``,
+                ``"beta"``, ``"gamma"``, ``"experiment_effect"``, ``"nu"``,
+                ``"tau"``, ``"sigma"``, ``"tau_ratio"``, ``"sigma_ratio"``,
+                ``"sigma_sd"`` or ``"sigma_sd_undefined_fraction"``), ``effect``
+                (effect display name, NaN for non-effect rows), ``cell`` (cell
+                label, NaN for rows not specific to a cell), ``mean``, ``lower``,
+                ``upper``, ``mean_percent``, ``lower_percent`` and
+                ``upper_percent``; the percent columns are NaN except for
+                ``beta`` rows. Select rows by ``kind``, ``effect`` and ``cell``
+                rather than by parsing ``parameter``.
                 ``attrs["reference_shape"]`` is ``"linear"`` or ``"spline"``.
         """
         rows = []
 
-        def add(parameter, draws, percent=False):
+        def add(kind, draws, percent=False, effect=np.nan, cell=np.nan, label=None):
             row = {
-                "parameter": parameter,
+                "parameter": _parameter_name(kind, effect, cell, label),
+                "kind": kind,
+                "effect": effect,
+                "cell": cell,
                 "mean": np.nanmean(draws),
                 "lower": np.nanquantile(draws, 0.025),
                 "upper": np.nanquantile(draws, 0.975),
@@ -690,25 +836,25 @@ class ProportionModelResult:
         if self.coding.effect_names:
             beta, gamma = self._draws("beta"), self._draws("gamma")
             for k, effect in enumerate(self.coding.effect_names):
-                add(f"beta[{effect}]", beta[:, k], percent=True)
+                add("beta", beta[:, k], percent=True, effect=effect)
             for k, effect in enumerate(self.coding.effect_names):
-                add(f"gamma[{effect}]", gamma[:, k])
+                add("gamma", gamma[:, k], effect=effect)
         if self._has("experiment_effect"):
             effects = self._draws("experiment_effect")
             experiments = self.idata["posterior"]["experiment_effect"].coords[
                 "experiment"
             ]
             for k, experiment in enumerate(experiments.values):
-                add(f"experiment_effect[{experiment}]", effects[:, k])
+                add("experiment_effect", effects[:, k], label=str(experiment))
         if self._has("nu"):
             add("nu", self._draws("nu"))
         for name in ("tau", "sigma"):
             if self.group_variances:
                 draws = self._draws(name)
                 for k, cell in enumerate(self.coding.cells):
-                    add(f"{name}[{cell}]", draws[:, k])
+                    add(name, draws[:, k], cell=cell)
                 for k, cell in enumerate(self.coding.cells[1:], start=1):
-                    add(f"{name}_ratio[{cell}]", draws[:, k] / draws[:, 0])
+                    add(f"{name}_ratio", draws[:, k] / draws[:, 0], cell=cell)
             else:
                 add(name, self._draws(name))
         if self._has("nu"):
@@ -719,11 +865,17 @@ class ProportionModelResult:
             sigma = self._draws("sigma")
             if self.group_variances:
                 for k, cell in enumerate(self.coding.cells):
-                    add(f"sigma_sd[{cell}]", sigma[:, k] * sd_factor)
+                    add("sigma_sd", sigma[:, k] * sd_factor, cell=cell)
             else:
                 add("sigma_sd", sigma * sd_factor)
             rows.append(
-                {"parameter": "sigma_sd_undefined_fraction", "mean": 1 - defined.mean()}
+                {
+                    "parameter": "sigma_sd_undefined_fraction",
+                    "kind": "sigma_sd_undefined_fraction",
+                    "effect": np.nan,
+                    "cell": np.nan,
+                    "mean": 1 - defined.mean(),
+                }
             )
         summary = pd.DataFrame(rows, columns=list(rows[0]))
         summary.attrs["reference_shape"] = self.reference_shape_used
@@ -1091,9 +1243,7 @@ class ProportionModelResult:
         index = self._draw_index(n_draws)
         row_cells = self._row_cells().to_numpy()
         reference_lower, reference_upper = self._reference_range()
-        is_main = np.array(
-            [":" not in e for e in self.coding.effect_names], dtype=float
-        )
+        is_main = self.coding.is_main_effect.astype(float)
 
         rows = []
         for cell in self.coding.cells:
@@ -1659,7 +1809,10 @@ class ProportionModelResult:
         families = (
             [tests.index]
             if family == "all"
-            else [group.index for _, group in tests.groupby("comparison", sort=False)]
+            else [
+                group.index
+                for _, group in tests.groupby(["cell_a", "cell_b"], sort=False)
+            ]
         )
         for members in families:
             tested = members[tests.loc[members, "p_raw"].notna().to_numpy()]
@@ -1669,6 +1822,28 @@ class ProportionModelResult:
                 )[1]
             tests.loc[members, "family_size"] = len(tested)
         return tests
+
+
+def _parameter_name(
+    kind: str, effect: float | str, cell: float | str, label: str | None
+) -> str:
+    """
+    Display name of a summary row, e.g. ``"beta[yap1[abt7]]"`` or ``"tau_ratio[yap1=abt7]"``.
+
+    Parameters:
+        kind (str): Parameter kind, e.g. ``"beta"``.
+        effect (float or str): Effect display name, or NaN.
+        cell (float or str): Cell label, or NaN.
+        label (str or None): Index label used when there is no effect or cell,
+            e.g. an experiment.
+
+    Returns:
+        str: ``kind`` alone, or ``kind[...]`` around the effect, cell or label.
+    """
+    for index in (effect, cell, label):
+        if isinstance(index, str):
+            return f"{kind}[{index}]"
+    return kind
 
 
 def _check_prob(prob: float) -> None:
@@ -2201,8 +2376,10 @@ def compare_experiments(
         pd.DataFrame: One row per experiment × parameter with ``experiment``,
             ``parameter`` (``beta[...]``, ``gamma[...]`` and, for fits with group
             variances, ``tau_ratio[...]`` and ``sigma_ratio[...]`` relative to the
-            reference cell), ``mean``, ``lower``, ``upper`` and the ``_percent``
-            versions, which are NaN except for ``beta`` rows.
+            reference cell), ``kind`` (``"beta"``, ``"gamma"``, ``"tau_ratio"``
+            or ``"sigma_ratio"``), ``effect`` (effect display name, or NaN),
+            ``cell`` (cell label, or NaN), ``mean``, ``lower``, ``upper`` and the
+            ``_percent`` versions, which are NaN except for ``beta`` rows.
 
     Raises:
         ValueError: If ``prob`` is not strictly between 0 and 1.
@@ -2211,27 +2388,36 @@ def compare_experiments(
     rows = []
     for experiment, result in results.items():
 
-        def add(parameter, draws, percent=False):
-            row = {"experiment": experiment, "parameter": parameter}
+        def add(kind, draws, percent=False, effect=np.nan, cell=np.nan):
+            row = {
+                "experiment": experiment,
+                "parameter": _parameter_name(kind, effect, cell, None),
+                "kind": kind,
+                "effect": effect,
+                "cell": cell,
+            }
             row.update(_summarize_draws(draws, prob, percent=percent))
             rows.append(row)
 
         if result.coding.effect_names:
             beta, gamma = result._draws("beta"), result._draws("gamma")
             for k, effect in enumerate(result.coding.effect_names):
-                add(f"beta[{effect}]", beta[:, k], percent=True)
+                add("beta", beta[:, k], percent=True, effect=effect)
             for k, effect in enumerate(result.coding.effect_names):
-                add(f"gamma[{effect}]", gamma[:, k])
+                add("gamma", gamma[:, k], effect=effect)
         if result.group_variances:
             for name in ("tau", "sigma"):
                 draws = result._draws(name)
                 for k, cell in enumerate(result.coding.cells[1:], start=1):
-                    add(f"{name}_ratio[{cell}]", draws[:, k] / draws[:, 0])
+                    add(f"{name}_ratio", draws[:, k] / draws[:, 0], cell=cell)
     return pd.DataFrame(
         rows,
         columns=[
             "experiment",
             "parameter",
+            "kind",
+            "effect",
+            "cell",
             "mean",
             "lower",
             "upper",
