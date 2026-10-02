@@ -407,6 +407,19 @@ def test_percent_display_matches_model_log_ratios(result):
     )
     assert len(markers.get_ydata()) == len(MOLT_LOG_X)
     np.testing.assert_allclose(markers.get_ydata(), 0, atol=1e-12)
+    # its band is the reference curve's own uncertainty, centered on 0
+    (band,) = _with_gid(ax, f"offset_band|{result.coding.reference_cell}")
+    x, y = band.get_paths()[0].vertices.T
+    lower, upper = result._reference_range()
+    assert x.min() == pytest.approx(np.exp(lower))
+    assert x.max() == pytest.approx(np.exp(upper))
+    curve = result.reference_curve(np.log(np.unique(x)))
+    assert y.min() == pytest.approx(
+        log_ratio_to_percentage(curve["lower"] - curve["mean"]).min()
+    )
+    assert y.max() == pytest.approx(
+        log_ratio_to_percentage(curve["upper"] - curve["mean"]).max()
+    )
 
     fig = pmp.plot_individual_consistency(result, 1, 3)
     deviations = result.worm_deviations("own")

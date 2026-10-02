@@ -624,12 +624,15 @@ def plot_offset_curves(
     """
     Plot each genotype's size-matched offset from the reference cell, in percent, against body size.
 
-    Each non-reference cell's ``group_offset_curve`` is evaluated only over that
-    cell's own observed ``log_x`` range. The curve is solid inside the reference
-    cell's overall ``log_x`` range, including gaps between reference molts, and
-    dashed beyond it. Markers sit at the cell's mean ``log_x`` of each molt and
-    show the observed or the model offset from ``molt_positions`` with its
-    interval; the reference cell gets markers too, around its line at 0.
+    The reference cell is the line at 0, with a band over its own ``log_x``
+    range showing the 95% band of ``reference_curve`` around its mean, i.e. how
+    precisely the reference curve itself is known. Each non-reference cell's
+    ``group_offset_curve`` and its 95% band are evaluated only over that cell's
+    own observed ``log_x`` range. The curve is solid inside the reference cell's
+    overall ``log_x`` range, including gaps between reference molts, and dashed
+    beyond it. Markers sit at each cell's mean ``log_x`` of each molt, the
+    reference cell included, and show the observed or the model offset from
+    ``molt_positions`` with its interval.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
@@ -683,6 +686,18 @@ def plot_offset_curves(
         linewidth=1,
         zorder=1,
         label=label_of[reference],
+    )
+    # uncertainty of the reference curve itself, as a band around its line at 0
+    reference_grid = np.linspace(reference_lower, reference_upper, n_grid)
+    reference_curve = result.reference_curve(reference_grid)
+    ax.fill_between(
+        np.exp(reference_grid),
+        log_ratio_to_percentage(reference_curve["lower"] - reference_curve["mean"]),
+        log_ratio_to_percentage(reference_curve["upper"] - reference_curve["mean"]),
+        color=color_of[reference],
+        alpha=0.25,
+        linewidth=0,
+        gid=f"offset_band|{reference}",
     )
     for cell in selected:
         color = color_of[cell]
