@@ -294,6 +294,9 @@ def test_series_counts_follow_the_design(result, tables):
     ax = pmp.plot_offset_curves(result).axes[0]
     assert _gid_cells(ax, "offset|") == set(mutants)
     assert _gid_cells(ax, "offset_markers|") == set(cells)
+    assert _gid_cells(ax, "offset_link|") == set(cells)
+    for line in _with_gid(ax, "offset_link|"):
+        assert len(line.get_xdata()) == len(MOLT_LOG_X)
 
     ax = pmp.plot_genotype_interaction(result).axes[0]
     assert _gid_cells(ax, "line|") == {"WT", "abt7", "xyz"}
@@ -333,7 +336,7 @@ def test_series_counts_follow_the_design(result, tables):
     assert len(_with_gid(ax, "pooled|")) == len(result.coding.effect_names)
 
 
-def test_offset_curves_stay_in_cell_range_and_dash_beyond_reference(result):
+def test_offset_curves_span_molt_centroids_and_dash_beyond_reference(result):
     ax = pmp.plot_offset_curves(result, markers=None).axes[0]
     row_cells = result.table["condition_id"].map(result.coding.cell_of_condition)
     reference_log_x = result.table.loc[
@@ -344,9 +347,9 @@ def test_offset_curves_stay_in_cell_range_and_dash_beyond_reference(result):
     for cell in result.coding.cells[1:]:
         lines = _with_gid(ax, f"offset|{cell}")
         x = np.concatenate([line.get_xdata() for line in lines])
-        cell_log_x = result.table.loc[row_cells == cell, "log_x"]
-        assert x.min() == pytest.approx(np.exp(cell_log_x.min()))
-        assert x.max() == pytest.approx(np.exp(cell_log_x.max()))
+        centroids = result.table[row_cells == cell].groupby("molt")["log_x"].mean()
+        assert x.min() == pytest.approx(np.exp(centroids.min()))
+        assert x.max() == pytest.approx(np.exp(centroids.max()))
         for line in lines:
             line_x = line.get_xdata()
             inside = (line_x >= reference_lower * (1 - 1e-12)) & (
@@ -418,9 +421,9 @@ def test_percent_display_matches_model_log_ratios(result):
     # its band is the reference curve's own uncertainty, centered on 0
     (band,) = _with_gid(ax, f"offset_band|{result.coding.reference_cell}")
     x, y = band.get_paths()[0].vertices.T
-    lower, upper = result._reference_range()
-    assert x.min() == pytest.approx(np.exp(lower))
-    assert x.max() == pytest.approx(np.exp(upper))
+    reference_x = markers.get_xdata()
+    assert x.min() == pytest.approx(reference_x.min())
+    assert x.max() == pytest.approx(reference_x.max())
     curve = result.reference_curve(np.log(np.unique(x)))
     assert y.min() == pytest.approx(
         log_ratio_to_percentage(curve["lower"] - curve["mean"]).min()

@@ -169,6 +169,13 @@ def _reference_range(result: ProportionModelResult) -> tuple[float, float]:
     return float(log_x.min()), float(log_x.max())
 
 
+def _centroid_range(result: ProportionModelResult, cell: str) -> tuple[float, float]:
+    """Min and max over molts of a cell's mean ``log_x`` at each molt."""
+    rows = _row_cells(result) == cell
+    centroids = result.table.loc[rows].groupby("molt")["log_x"].mean()
+    return float(centroids.min()), float(centroids.max())
+
+
 def _measurement_names(result: ProportionModelResult) -> tuple[str, str]:
     """Names of X and Y from ``table.attrs`` (``"column_x"``, ``"column_y"``), else generic ones."""
     attrs = result.table.attrs
@@ -611,15 +618,15 @@ def plot_offset_curves(
     """
     Plot each genotype's size-matched offset from the reference cell, in percent, against body size.
 
-    The reference cell is the line at 0, with a band over its own ``log_x``
-    range showing the 95% band of ``reference_curve`` around its mean, i.e. how
-    precisely the reference curve itself is known. Each non-reference cell's
-    ``group_offset_curve`` and its 95% band are evaluated only over that cell's
-    own observed ``log_x`` range. The curve is solid inside the reference cell's
-    overall ``log_x`` range, including gaps between reference molts, and dashed
-    beyond it. Markers sit at each cell's mean ``log_x`` of each molt, the
-    reference cell included, and show the observed or the model offset from
-    ``molt_positions`` with its interval.
+    The reference cell is the line at 0, with a band showing the 95% band of
+    ``reference_curve`` around its mean, i.e. how precisely the reference curve
+    itself is known. Bands and curves of every cell span only from its first to
+    its last molt centroid, the cell's mean ``log_x`` at a molt. Each
+    non-reference cell's ``group_offset_curve`` is solid inside the reference
+    cell's overall observed ``log_x`` range, including gaps between reference
+    molts, and dashed beyond it. Markers sit at each cell's molt centroids, the
+    reference cell included, show the observed or the model offset from
+    ``molt_positions`` with its interval, and are joined by a faint dotted line.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
@@ -659,7 +666,6 @@ def plot_offset_curves(
     reference = result.coding.reference_cell
     x_name, y_name = _measurement_names(result)
     fig, ax, owns_figure = _single_axes(ax, ax_size)
-    row_cells = _row_cells(result)
     reference_lower, reference_upper = _reference_range(result)
     positions = result.molt_positions() if markers is not None else None
 
@@ -671,7 +677,7 @@ def plot_offset_curves(
         label=label_of[reference],
     )
     # uncertainty of the reference curve itself, as a band around its line at 0
-    reference_grid = np.linspace(reference_lower, reference_upper, n_grid)
+    reference_grid = np.linspace(*_centroid_range(result, reference), n_grid)
     reference_curve = result.reference_curve(reference_grid)
     ax.fill_between(
         np.exp(reference_grid),
@@ -684,12 +690,8 @@ def plot_offset_curves(
     )
     for cell in selected:
         color = color_of[cell]
-        cell_log_x = result.table["log_x"].to_numpy()[row_cells == cell]
         grid = _grid_with_bounds(
-            cell_log_x.min(),
-            cell_log_x.max(),
-            n_grid,
-            (reference_lower, reference_upper),
+            *_centroid_range(result, cell), n_grid, (reference_lower, reference_upper)
         )
         curve = result.group_offset_curve(cell, grid)
         x = np.exp(grid)
@@ -718,8 +720,19 @@ def plot_offset_curves(
         for cell in [reference, *selected]:
             molts = positions[positions["cell"] == cell]
             center = molts[f"{prefix}_mean_percent"].to_numpy()
+            centroids = np.exp(molts["log_x_mean"].to_numpy(dtype=float))
+            ax.plot(
+                centroids,
+                center,
+                linestyle=":",
+                linewidth=1,
+                alpha=0.6,
+                color=color_of[cell],
+                zorder=4,
+                gid=f"offset_link|{cell}",
+            )
             ax.errorbar(
-                np.exp(molts["log_x_mean"].to_numpy(dtype=float)),
+                centroids,
                 center,
                 yerr=_interval_errors(
                     center,
