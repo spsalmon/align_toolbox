@@ -1,6 +1,12 @@
+import json
 import logging
+import subprocess
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version
 from itertools import combinations, product
+from pathlib import Path
 from typing import Literal
 from warnings import warn
 
@@ -15,6 +21,9 @@ from scipy.stats import kurtosis, levene, norm
 from statsmodels.stats.multitest import multipletests
 from xarray import Dataset, DataTree
 
+from align_toolbox.data_analysis.time_series import compute_series_at_time_classified
+from align_toolbox.foundation.utils import find_best_string_match
+from align_toolbox.plotting.plotting_structure import get_time_and_ecdysis
 from align_toolbox.plotting.proportions import log_ratio_to_percentage
 
 __all__ = [
@@ -23,9 +32,16 @@ __all__ = [
     "SplineBasis",
     "build_genotype_coding",
     "build_proportion_table",
+    "canonical_percentages",
     "compare_experiments",
+    "development_stages",
     "fit_per_experiment",
     "fit_proportion_model",
+    "fit_provenance",
+    "series_at_development_percentages",
+    "table_data_hash",
+    "times_at_development_percentages",
+    "to_json_compatible",
 ]
 
 logger = logging.getLogger(__name__)
@@ -34,6 +50,10 @@ LIKELIHOODS = ("normal", "student_t")
 REFERENCE_SHAPES = ("linear", "spline", "auto")
 SUPPORT_LABELS = ("in", "gap", "out")
 SINGLE_FACTOR_NAME = "condition"
+
+N_STAGES = 4
+# canonical development percentages are rounded to this many decimals
+PERCENTAGE_DECIMALS = 6
 
 MAX_RHAT = 1.01
 MIN_ESS = 400
@@ -61,44 +81,274 @@ SPLINE_TARGET_ACCEPT = 0.99
 # DATA PREPARATION
 
 
+def canonical_percentages(percentages: np.ndarray | list[float]) -> list[float]:
+    """
+    Sort development percentages and drop duplicates after rounding to 6 decimals.
+
+    Two requests for the same set of percentages, in another order or with
+    repeats, give the same canonical list, which is what tables, provenance and
+    cache keys record.
+
+    Parameters:
+        percentages (np.ndarray or list[float]): Fractions of total development
+            (L1–L4), of shape ``(n_percentages,)``.
+
+    Returns:
+        list[float]: Sorted, unique percentages rounded to 6 decimals.
+
+    Raises:
+        ValueError: If ``percentages`` is empty, not one-dimensional, not finite,
+            or has a value outside ``[0, 1]``.
+    """
+    values = np.asarray(percentages, dtype=float)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError(
+            "`percentages` must be a non-empty one-dimensional array, got shape "
+            f"{values.shape}."
+        )
+    if not np.all(np.isfinite(values)) or values.min() < 0 or values.max() > 1:
+        raise ValueError(
+            "`percentages` are fractions of total development and must lie in "
+            f"[0, 1], got {values.tolist()}."
+        )
+    return [float(v) for v in np.unique(np.round(values, PERCENTAGE_DECIMALS))]
+
+
+def development_stages(
+    percentages: np.ndarray | list[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Locate development percentages within the larval stages.
+
+    A percentage ``p`` of total development (L1–L4) lies in stage
+    ``s = ceil(4 * p)`` (stage 1 for ``p = 0``) at fraction ``f = 4 * p - (s - 1)``
+    of it, so a percentage exactly at ``k / 4`` ends stage ``k``, i.e. is molt
+    ``k``, and 0 is hatch.
+
+    Parameters:
+        percentages (np.ndarray or list[float]): Fractions of total development,
+            in ``[0, 1]``, of shape ``(n_percentages,)``.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: ``(stage, fraction)``, each of shape
+            ``(n_percentages,)``: the larval stage (1–4) and the fraction of it,
+            in ``[0, 1]``, elapsed at each percentage.
+    """
+    # rounding absorbs float noise so that k / 4 lands exactly on molt k
+    quarters = np.round(N_STAGES * np.asarray(percentages, dtype=float), 9)
+    stage = np.clip(np.ceil(quarters), 1, N_STAGES).astype(int)
+    return stage, quarters - (stage - 1)
+
+
+def times_at_development_percentages(
+    ecdysis: np.ndarray, percentages: np.ndarray | list[float]
+) -> np.ndarray:
+    """
+    Map development percentages to each worm's time, linearly within each larval stage.
+
+    Percentage ``p`` in stage ``s`` at fraction ``f`` (see ``development_stages``)
+    is at time ``E_{s-1} + f * (E_s - E_{s-1})``, with ``E_0`` hatch and
+    ``E_1``–``E_4`` the molts. A percentage at a molt or at hatch takes that
+    ecdysis time exactly and needs no other; any other percentage is NaN when
+    either ecdysis bounding its stage is NaN.
+
+    Parameters:
+        ecdysis (np.ndarray): Hatch and molt times of shape ``(n_worms, 5)``.
+        percentages (np.ndarray or list[float]): Fractions of total development,
+            in ``[0, 1]``, of shape ``(n_percentages,)``.
+
+    Returns:
+        np.ndarray: Times of shape ``(n_worms, n_percentages)``.
+    """
+    ecdysis = np.asarray(ecdysis, dtype=float)
+    stage, fraction = development_stages(percentages)
+    start, end = ecdysis[:, stage - 1], ecdysis[:, stage]
+    times = start + fraction * (end - start)
+    times = np.where(fraction == 0, start, times)
+    return np.where(fraction == 1, end, times)
+
+
+def _qc_key(condition: dict, column: str) -> str:
+    """Key of the QC column of ``column``: the only key with ``"qc"``, else the best match."""
+    qc_keys = [key for key in condition.keys() if "qc" in key]
+    if not qc_keys:
+        raise ValueError(
+            f"Condition {condition.get('condition_id')} has no QC column for "
+            f"{column}; sampling at development percentages needs one."
+        )
+    if len(qc_keys) == 1:
+        return qc_keys[0]
+    return find_best_string_match(column, qc_keys)
+
+
+def series_at_development_percentages(
+    condition: dict,
+    column: str,
+    percentages: np.ndarray | list[float],
+    lmbda: float = 0.0075,
+    medfilt_window: int = 5,
+    bspline_order: int = 3,
+) -> np.ndarray:
+    """
+    Evaluate each worm's smoothed time series at development percentages.
+
+    Percentages are mapped to times with ``times_at_development_percentages``,
+    on the time base of ``plotting_structure.get_time_and_ecdysis``, and the
+    series is evaluated there with ``compute_series_at_time_classified``, called
+    once per worm with all its times, exactly as at-molt values are recomputed
+    when building the plotting structure. The QC column is the condition's only
+    key containing ``"qc"``, or else the one best matching ``column``.
+
+    Parameters:
+        condition (dict): Condition dict holding ``column``, its QC column and
+            the time and ecdysis arrays.
+        column (str): Key of the raw series, of shape ``(n_worms, n_frames)``.
+        percentages (np.ndarray or list[float]): Fractions of total development,
+            in ``[0, 1]``, of shape ``(n_percentages,)``.
+        lmbda (float): Whittaker-Eilers smoothing parameter. (default: 0.0075)
+        medfilt_window (int): Kernel size of the median filter. (default: 5)
+        bspline_order (int): Order of the b-spline interpolant. (default: 3)
+
+    Returns:
+        np.ndarray: Values of shape ``(n_worms, n_percentages)``; NaN where the
+            ecdysis times locating a percentage are missing.
+
+    Raises:
+        ValueError: If the condition has no QC column.
+    """
+    series = np.asarray(condition[column], dtype=float)
+    qc = condition[_qc_key(condition, column)]
+    time, ecdysis = get_time_and_ecdysis(condition)
+    times = times_at_development_percentages(ecdysis, percentages)
+    values = np.full(times.shape, np.nan)
+    for i in range(series.shape[0]):
+        known = ~np.isnan(times[i])
+        if known.any():
+            values[i, known] = compute_series_at_time_classified(
+                series[i],
+                times[i, known],
+                time[i],
+                qc[i],
+                lmbda=lmbda,
+                medfilt_window=medfilt_window,
+                bspline_order=bspline_order,
+            )
+    return values
+
+
+def _timepoint_label(percentage: float) -> str:
+    """Label of a development percentage: ``"Mk"`` at molt ``k`` (``k / 4``), else e.g. ``"37.5%"``."""
+    molt = N_STAGES * percentage
+    if np.isclose(molt, round(molt), rtol=0, atol=1e-9):
+        return f"M{round(molt)}"
+    return f"{round(100 * percentage, PERCENTAGE_DECIMALS - 2):g}%"
+
+
+def _add_timepoint_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add ecdysis-mode ``timepoint`` and ``timepoint_label`` columns to a frame indexed by molt.
+
+    Tables and misfit tables built before timepoints existed have a ``molt``
+    column only; molt ``k`` is timepoint ``k / 4``, labelled ``"Mk"``.
+
+    Parameters:
+        frame (pd.DataFrame): Frame with a ``molt`` column.
+
+    Returns:
+        pd.DataFrame: ``frame`` itself if it already has a ``timepoint`` column,
+            else a copy with both columns appended.
+    """
+    if "timepoint" in frame.columns or "molt" not in frame.columns:
+        return frame
+    molts = frame["molt"].to_numpy()
+    return frame.assign(
+        timepoint=molts.astype(float) / N_STAGES,
+        timepoint_label=[f"M{molt}" for molt in molts],
+    )
+
+
 def build_proportion_table(
     conditions_struct: list,
     column_x: str,
     column_y: str,
     conditions: list[int],
     remove_hatch: bool = True,
+    percentages: np.ndarray | None = None,
+    lmbda: float = 0.0075,
+    medfilt_window: int = 5,
+    bspline_order: int = 3,
 ) -> pd.DataFrame:
     """
-    Flatten per-molt measurements of two columns into one row per worm × molt in log space.
+    Flatten measurements of two columns into one row per worm × timepoint in log space.
+
+    Without ``percentages``, the columns hold values at each ecdysis (e.g.
+    ``*_at_ecdysis``) and each event is a timepoint: molt ``k`` is timepoint
+    ``k / 4``, labelled ``"Mk"``. With ``percentages``, the columns are raw time
+    series (e.g. ``"body_seg_str_volume"``), smoothed and evaluated at each
+    percentage of total development (L1–L4) by
+    ``series_at_development_percentages``, the procedure that recomputes values
+    at molt; 0.25, 0.5, 0.75 and 1.0 are the four molts. The percentages are
+    canonicalized with ``canonical_percentages``; a percentage at molt ``k``
+    (``k / 4``) is labelled ``"Mk"`` as with ecdysis sampling, any other
+    compactly, e.g. ``"37.5%"``. Its ``molt`` is the larval stage containing
+    it, a percentage exactly at ``k / 4`` belonging to molt ``k``.
 
     Rows where either value is NaN or non-positive are dropped. Each experiment path
     is mapped to a short label (``"E1"``, ``"E2"``, ... in sorted path order) and
     worms are identified by condition, experiment label and point number, since
-    point numbers repeat between experiments. The attrition per condition × molt is
-    stored in ``table.attrs["counts"]`` and the label mapping in
-    ``table.attrs["experiment_labels"]``.
+    point numbers repeat between experiments.
 
     Parameters:
         conditions_struct (list): List of condition dicts, each holding
             ``"condition_id"``, ``"point"`` and ``"experiment"`` arrays of shape
             ``(n_worms, 1)`` and the two measurement columns.
-        column_x (str): Key of the X measurement, of shape ``(n_worms, n_events)``.
-        column_y (str): Key of the Y measurement, of shape ``(n_worms, n_events)``.
+        column_x (str): Key of the X measurement, of shape ``(n_worms, n_events)``
+            or, with ``percentages``, the raw series of shape
+            ``(n_worms, n_frames)``.
+        column_y (str): Key of the Y measurement, of the same shape.
         conditions (list[int]): Condition ids to include.
-        remove_hatch (bool): If ``True``, drop event index 0 (hatch). (default: True)
+        remove_hatch (bool): If ``True``, drop event index 0 (hatch). Ignored
+            with ``percentages``. (default: True)
+        percentages (np.ndarray or None): Fractions of total development in
+            ``[0, 1]`` at which to sample the raw series; ``None`` uses the
+            values at ecdysis. (default: None)
+        lmbda (float): Whittaker-Eilers smoothing parameter, with
+            ``percentages`` only. (default: 0.0075)
+        medfilt_window (int): Median filter kernel size, with ``percentages``
+            only. (default: 5)
+        bspline_order (int): Order of the b-spline interpolant, with
+            ``percentages`` only. (default: 3)
 
     Returns:
         pd.DataFrame: Columns ``condition_id``, ``worm_id``, ``experiment``,
-            ``molt`` (original event index), ``log_x`` and ``log_y``. ``attrs``
-            holds ``"counts"`` (DataFrame with ``condition_id``, ``molt``,
-            ``n_worms``, ``n_nan``, ``n_non_positive`` and ``n_kept``) and
-            ``"experiment_labels"`` (dict mapping label to experiment path).
+            ``molt`` (event index, or larval stage with ``percentages``),
+            ``log_x``, ``log_y``, ``timepoint`` (fraction of development) and
+            ``timepoint_label``. ``attrs`` holds ``"counts"`` (DataFrame with
+            ``condition_id``, ``molt``, ``n_worms``, ``n_nan``,
+            ``n_non_positive``, ``n_kept``, ``timepoint`` and
+            ``timepoint_label``), ``"experiment_labels"`` (dict mapping label to
+            experiment path), ``"sampling"`` (``"ecdysis"`` or
+            ``"percentages"``), ``"percentages"`` (canonical list, or ``None``),
+            ``"column_x"``, ``"column_y"``, ``"conditions"``,
+            ``"remove_hatch"`` (``None`` with ``percentages``), and
+            ``"lmbda"``, ``"medfilt_window"`` and ``"bspline_order"``
+            (``None`` without ``percentages``).
 
     Raises:
         ValueError: If a requested condition is missing from ``conditions_struct``,
-            a condition lacks the ``"experiment"`` key, or the two columns differ
-            in shape.
+            a condition lacks the ``"experiment"`` key, the two columns differ
+            in shape, or, with ``percentages``, a percentage is outside
+            ``[0, 1]`` or a condition has no QC column.
     """
+    if percentages is not None:
+        percentages = canonical_percentages(percentages)
+        remove_hatch = None
+    smoothing = {
+        "lmbda": lmbda,
+        "medfilt_window": medfilt_window,
+        "bspline_order": bspline_order,
+    }
+
     conditions_by_id = {int(c["condition_id"]): c for c in conditions_struct}
     missing = [c for c in conditions if c not in conditions_by_id]
     if missing:
@@ -119,7 +369,6 @@ def build_proportion_table(
     )
     label_of_path = {path: f"E{i + 1}" for i, path in enumerate(experiment_paths)}
 
-    first_event = 1 if remove_hatch else 0
     blocks = []
     counts = []
     for condition_id in conditions:
@@ -141,19 +390,39 @@ def build_proportion_table(
             ]
         )
 
-        for molt in range(first_event, x.shape[1]):
-            x_molt, y_molt = x[:, molt], y[:, molt]
-            is_nan = np.isnan(x_molt) | np.isnan(y_molt)
-            is_non_positive = ~is_nan & ((x_molt <= 0) | (y_molt <= 0))
+        if percentages is None:
+            first_event = 1 if remove_hatch else 0
+            events = range(first_event, x.shape[1])
+            molts = list(events)
+            timepoints = [molt / N_STAGES for molt in events]
+            labels = [f"M{molt}" for molt in events]
+            x_values, y_values = x[:, first_event:], y[:, first_event:]
+        else:
+            molts = development_stages(percentages)[0].tolist()
+            timepoints = percentages
+            labels = [_timepoint_label(p) for p in percentages]
+            x_values, y_values = (
+                series_at_development_percentages(
+                    condition, column, percentages, **smoothing
+                )
+                for column in (column_x, column_y)
+            )
+
+        for k, (molt, timepoint, label) in enumerate(zip(molts, timepoints, labels)):
+            x_at, y_at = x_values[:, k], y_values[:, k]
+            is_nan = np.isnan(x_at) | np.isnan(y_at)
+            is_non_positive = ~is_nan & ((x_at <= 0) | (y_at <= 0))
             keep = ~is_nan & ~is_non_positive
             counts.append(
                 {
                     "condition_id": condition_id,
                     "molt": molt,
-                    "n_worms": len(x_molt),
+                    "n_worms": len(x_at),
                     "n_nan": int(is_nan.sum()),
                     "n_non_positive": int(is_non_positive.sum()),
                     "n_kept": int(keep.sum()),
+                    "timepoint": timepoint,
+                    "timepoint_label": label,
                 }
             )
             blocks.append(
@@ -163,8 +432,10 @@ def build_proportion_table(
                         "worm_id": worm_ids[keep],
                         "experiment": experiment_labels[keep],
                         "molt": molt,
-                        "log_x": np.log(x_molt[keep]),
-                        "log_y": np.log(y_molt[keep]),
+                        "log_x": np.log(x_at[keep]),
+                        "log_y": np.log(y_at[keep]),
+                        "timepoint": timepoint,
+                        "timepoint_label": label,
                     }
                 )
             )
@@ -174,7 +445,44 @@ def build_proportion_table(
     table.attrs["experiment_labels"] = {
         label: path for path, label in label_of_path.items()
     }
+    table.attrs["sampling"] = "ecdysis" if percentages is None else "percentages"
+    table.attrs["percentages"] = percentages
+    table.attrs["column_x"] = column_x
+    table.attrs["column_y"] = column_y
+    table.attrs["conditions"] = [int(c) for c in conditions]
+    table.attrs["remove_hatch"] = remove_hatch
+    for name, value in smoothing.items():
+        table.attrs[name] = None if percentages is None else value
     return table
+
+
+def table_data_hash(table: pd.DataFrame) -> str:
+    """
+    Hash the data of a proportion table.
+
+    The hash covers the column names and dtypes, every value and the index, and
+    the experiment label mapping of ``attrs``; equal hashes mean the model is
+    fitted on the same data.
+
+    Parameters:
+        table (pd.DataFrame): Output of ``build_proportion_table``.
+
+    Returns:
+        str: Hexadecimal SHA-256 digest.
+    """
+    digest = sha256()
+    digest.update(
+        json.dumps(
+            {
+                "columns": [str(c) for c in table.columns],
+                "dtypes": [str(t) for t in table.dtypes],
+                "experiment_labels": table.attrs.get("experiment_labels", {}),
+            },
+            sort_keys=True,
+        ).encode()
+    )
+    digest.update(pd.util.hash_pandas_object(table, index=True).to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 # GENOTYPE CODING
@@ -705,7 +1013,7 @@ class ProportionModelResult:
         x_ref (float): Centering point of ``log_x``; genotype intercept effects
             are offsets at this body size.
         experiment_labels (dict[str, str]): Experiment label to path mapping.
-        counts (pd.DataFrame or None): Attrition per condition × molt.
+        counts (pd.DataFrame or None): Attrition per condition × timepoint.
         diagnostics (dict[str, float]): ``max_rhat``, ``min_ess_bulk``,
             ``min_ess_tail`` and ``n_divergences``.
         likelihood (str): ``"normal"`` or ``"student_t"``.
@@ -714,12 +1022,15 @@ class ProportionModelResult:
         reference_shape_used (str): ``"linear"`` or ``"spline"``. (default: "linear")
         spline_basis (SplineBasis or None): Curvature basis of the spline
             reference curve; ``None`` for a line. (default: None)
-        linear_misfit (pd.DataFrame or None): ``reference_residuals_by_molt`` of
-            the linear fit, when one was made. (default: None)
-        spline_misfit (pd.DataFrame or None): ``reference_residuals_by_molt`` of
-            the spline fit, when one was made. (default: None)
+        linear_misfit (pd.DataFrame or None): ``reference_residuals_by_timepoint``
+            of the linear fit, when one was made. (default: None)
+        spline_misfit (pd.DataFrame or None): ``reference_residuals_by_timepoint``
+            of the spline fit, when one was made. (default: None)
         linearity_threshold (float or None): Misfit threshold, as a fraction,
             used by ``reference_shape="auto"``. (default: None)
+        provenance (dict or None): Data, settings and software that produced
+            the fit, set by ``fit_proportion_model``; JSON-compatible. ``None``
+            for results pickled before provenance was recorded. (default: None)
     """
 
     idata: DataTree
@@ -737,6 +1048,96 @@ class ProportionModelResult:
     linear_misfit: pd.DataFrame | None = None
     spline_misfit: pd.DataFrame | None = None
     linearity_threshold: float | None = None
+    provenance: dict | None = None
+
+    def __post_init__(self) -> None:
+        self.table = _add_timepoint_columns(self.table)
+
+    def __setstate__(self, state: dict) -> None:
+        # results pickled before timepoints and provenance existed
+        state.setdefault("provenance", None)
+        by_percentage = state["table"].attrs.get("sampling") == "percentages"
+        for name in ("table", "linear_misfit", "spline_misfit"):
+            if state.get(name) is not None:
+                state[name] = _add_timepoint_columns(state[name])
+                # results pickled before molt percentages were labelled "Mk"
+                if by_percentage and "timepoint" in state[name].columns:
+                    state[name] = state[name].assign(
+                        timepoint_label=state[name]["timepoint"].map(_timepoint_label)
+                    )
+        self.__dict__.update(state)
+
+    @property
+    def sampling(self) -> str:
+        """``"ecdysis"`` or ``"percentages"``: how the table's timepoints were sampled."""
+        return self.table.attrs.get("sampling", "ecdysis")
+
+    def timepoints(self) -> pd.DataFrame:
+        """
+        List the timepoints of the table in development order.
+
+        Returns:
+            pd.DataFrame: One row per timepoint with ``timepoint`` (fraction of
+                development), ``timepoint_label`` and ``molt`` (event index, or
+                larval stage for percentage sampling).
+        """
+        return (
+            self.table[["timepoint", "timepoint_label", "molt"]]
+            .drop_duplicates("timepoint")
+            .sort_values("timepoint")
+            .reset_index(drop=True)
+        )
+
+    def resolve_timepoint(self, timepoint: int | float | str) -> float:
+        """
+        Return the table timepoint designated by a molt number, timepoint value or label.
+
+        An int is a molt number, molt ``k`` being timepoint ``k / 4`` with either
+        sampling; a float is a timepoint value, matched to 6 decimals; a str is a
+        timepoint label such as ``"M2"`` or ``"37.5%"``, or a percentage such as
+        ``"50%"`` whose label is ``"M2"``.
+
+        Parameters:
+            timepoint (int, float or str): The timepoint to look up.
+
+        Returns:
+            float: The matching value of the table's ``timepoint`` column.
+
+        Raises:
+            ValueError: If no timepoint of the table matches.
+        """
+        available = self.timepoints()
+        labels = available["timepoint_label"]
+        if isinstance(timepoint, str) and timepoint in labels.values:
+            matches = available["timepoint"][labels == timepoint]
+        else:
+            if isinstance(timepoint, (int, np.integer)) and not isinstance(
+                timepoint, bool
+            ):
+                value = timepoint / N_STAGES
+            elif isinstance(timepoint, str):
+                # a percentage given as text, e.g. "50%" when it is labelled "M2"
+                number = timepoint[:-1] if timepoint.endswith("%") else ""
+                try:
+                    value = float(number) / 100
+                except ValueError:
+                    value = np.nan
+            else:
+                value = float(timepoint)
+            matches = available["timepoint"][
+                np.isclose(available["timepoint"], value, rtol=0, atol=1e-6)
+            ]
+        if matches.empty:
+            raise ValueError(
+                f"Timepoint {timepoint!r} is not in the table; timepoints are "
+                f"{labels.tolist()}."
+            )
+        return float(matches.iloc[0])
+
+    def _deviation_column(self, timepoint: float) -> int | str:
+        """Column of ``worm_deviations`` holding ``timepoint``: the molt for ecdysis sampling, else the label."""
+        row = self.timepoints().set_index("timepoint").loc[timepoint]
+        return row["molt"] if self.sampling == "ecdysis" else row["timepoint_label"]
 
     def _check_coding(self) -> None:
         """
@@ -932,7 +1333,7 @@ class ProportionModelResult:
         """
         Label each observation by where its ``log_x`` falls relative to the reference cell's data.
 
-        The reference support is the union of the reference cell's per-molt
+        The reference support is the union of the reference cell's per-timepoint
         min–max ``log_x`` ranges. Values inside a range are ``"in"``, values
         between the lowest and highest range but outside all of them are
         ``"gap"``, and values below or above every range are ``"out"``.
@@ -941,7 +1342,7 @@ class ProportionModelResult:
             pd.Series: Labels aligned with ``table.index``, named ``"support"``.
         """
         reference = self.table[self._reference_mask()]
-        ranges = reference.groupby("molt")["log_x"].agg(["min", "max"]).to_numpy()
+        ranges = reference.groupby("timepoint")["log_x"].agg(["min", "max"]).to_numpy()
         log_x = self.table["log_x"].to_numpy()[:, np.newaxis]
         inside = ((log_x >= ranges[:, 0]) & (log_x <= ranges[:, 1])).any(axis=1)
         log_x = log_x[:, 0]
@@ -998,34 +1399,36 @@ class ProportionModelResult:
             )
         return fitted
 
-    def reference_residuals_by_molt(self) -> pd.DataFrame:
+    def reference_residuals_by_timepoint(self) -> pd.DataFrame:
         """
-        Compute the posterior mean residual of the reference cell at each molt, in percent.
+        Compute the posterior mean residual of the reference cell at each timepoint, in percent.
 
         Residuals are marginal: ``log_y`` minus the fitted reference curve
         (``a + b * xc``, plus ``s(xc)`` for a spline) and the experiment effect,
         without the worm intercepts, which could otherwise absorb part of the
-        misfit, especially for worms with missing molts. They are averaged over
-        the reference observations of each molt, then back-transformed with
-        ``log_ratio_to_percentage``. Values near 0 at every molt mean the curve
-        describes the reference cell.
+        misfit, especially for worms with missing timepoints. They are averaged
+        over the reference observations of each timepoint, then back-transformed
+        with ``log_ratio_to_percentage``. Values near 0 at every timepoint mean
+        the curve describes the reference cell. ``reference_residuals_by_molt``
+        is an alias.
 
         Returns:
             pd.DataFrame: Columns ``molt``, ``n_observations``, ``mean_percent``,
-                ``lower_percent`` and ``upper_percent`` (95% equal-tailed interval).
+                ``lower_percent``, ``upper_percent`` (95% equal-tailed interval),
+                ``timepoint`` and ``timepoint_label``, one row per timepoint.
         """
         reference = self.table[self._reference_mask()]
         fitted = self._marginal_fitted_draws(reference, genotype_effects=False)
         residuals = reference["log_y"].to_numpy()[np.newaxis, :] - fitted
 
         rows = []
-        for molt in sorted(reference["molt"].unique()):
-            in_molt = (reference["molt"] == molt).to_numpy()
-            mean_residual = residuals[:, in_molt].mean(axis=1)
+        for timepoint, molt, label in _timepoint_groups(reference):
+            at_timepoint = (reference["timepoint"] == timepoint).to_numpy()
+            mean_residual = residuals[:, at_timepoint].mean(axis=1)
             rows.append(
                 {
                     "molt": molt,
-                    "n_observations": int(in_molt.sum()),
+                    "n_observations": int(at_timepoint.sum()),
                     "mean_percent": log_ratio_to_percentage(mean_residual.mean()),
                     "lower_percent": log_ratio_to_percentage(
                         np.quantile(mean_residual, 0.025)
@@ -1033,9 +1436,13 @@ class ProportionModelResult:
                     "upper_percent": log_ratio_to_percentage(
                         np.quantile(mean_residual, 0.975)
                     ),
+                    "timepoint": timepoint,
+                    "timepoint_label": label,
                 }
             )
         return pd.DataFrame(rows)
+
+    reference_residuals_by_molt = reference_residuals_by_timepoint
 
     def residuals(self) -> pd.DataFrame:
         """
@@ -1271,19 +1678,20 @@ class ProportionModelResult:
             rows.append(row)
         return pd.DataFrame(rows)
 
-    def molt_positions(
+    def timepoint_positions(
         self, prob: float = 0.95, n_draws: int | None = None
     ) -> pd.DataFrame:
         """
-        Summarize where each genotype cell sits at each molt, in the data and in the model.
+        Summarize where each genotype cell sits at each timepoint, in the data and in the model.
 
         ``model_offset`` is the cell's offset (see ``cell_offsets``) at the cell's
-        mean ``log_x`` for that molt. ``observed_offset`` is the mean over the
-        cell × molt observations of ``log_y - f(log_x) - e_exp``, the data's own
-        deviation from the reference curve; its interval comes from the posterior
-        draws of ``f`` and the experiment effects. Because genotype effects are
-        linear in ``log_x``, the two agree when the model fits, up to the
-        average worm intercept and residual of the group.
+        mean ``log_x`` for that timepoint. ``observed_offset`` is the mean over
+        the cell × timepoint observations of ``log_y - f(log_x) - e_exp``, the
+        data's own deviation from the reference curve; its interval comes from
+        the posterior draws of ``f`` and the experiment effects. Because genotype
+        effects are linear in ``log_x``, the two agree when the model fits, up to
+        the average worm intercept and residual of the group. ``molt_positions``
+        is an alias.
 
         Parameters:
             prob (float): Probability mass of the equal-tailed intervals.
@@ -1292,13 +1700,14 @@ class ProportionModelResult:
                 ``None`` uses all. (default: None)
 
         Returns:
-            pd.DataFrame: One row per cell × molt with ``cell``, ``molt``, ``n``,
-                ``log_x_mean``, ``log_x_sd``, ``log_y_mean``, ``log_y_sd`` (raw data,
-                SD with ``ddof=1``), the ``mean``, ``lower`` and ``upper`` of
-                ``model_offset`` and ``observed_offset`` (natural-log units) with
-                their ``_percent`` versions, and ``extrapolated`` (``True`` if the
-                mean ``log_x`` is below or above the reference cell's overall
-                ``log_x`` range; gaps between reference molts do not count).
+            pd.DataFrame: One row per cell × timepoint with ``cell``, ``molt``,
+                ``n``, ``log_x_mean``, ``log_x_sd``, ``log_y_mean``, ``log_y_sd``
+                (raw data, SD with ``ddof=1``), the ``mean``, ``lower`` and
+                ``upper`` of ``model_offset`` and ``observed_offset`` (natural-log
+                units) with their ``_percent`` versions, ``extrapolated`` (``True``
+                if the mean ``log_x`` is below or above the reference cell's
+                overall ``log_x`` range; gaps between reference timepoints do not
+                count), ``timepoint`` and ``timepoint_label``.
 
         Raises:
             ValueError: If ``prob`` is not strictly between 0 and 1.
@@ -1306,7 +1715,7 @@ class ProportionModelResult:
         _check_prob(prob)
         index = self._draw_index(n_draws)
         row_cells = self._row_cells().to_numpy()
-        molts = self.table["molt"].to_numpy()
+        timepoints = self.table["timepoint"].to_numpy()
         log_x, log_y = (self.table[c].to_numpy(dtype=float) for c in ("log_x", "log_y"))
         deviation = log_y - self._marginal_fitted_draws(
             self.table, genotype_effects=False, index=index
@@ -1316,8 +1725,10 @@ class ProportionModelResult:
         rows = []
         for cell in self.coding.cells:
             d = self.coding.effect_vector(self.coding.resolve_cell(cell))
-            for molt in sorted(np.unique(molts[row_cells == cell])):
-                in_group = (row_cells == cell) & (molts == molt)
+            for timepoint, molt, label in _timepoint_groups(
+                self.table[row_cells == cell]
+            ):
+                in_group = (row_cells == cell) & (timepoints == timepoint)
                 mean_log_x = float(log_x[in_group].mean())
                 row = {
                     "cell": cell,
@@ -1337,8 +1748,12 @@ class ProportionModelResult:
                 row["extrapolated"] = bool(
                     mean_log_x < reference_lower or mean_log_x > reference_upper
                 )
+                row["timepoint"] = timepoint
+                row["timepoint_label"] = label
                 rows.append(row)
         return pd.DataFrame(rows)
+
+    molt_positions = timepoint_positions
 
     def _residual_sd_factor(self, index: np.ndarray | None) -> np.ndarray:
         """Per-draw factor from ``sigma`` to the residual SD; NaN where ``nu <= 2``."""
@@ -1409,7 +1824,7 @@ class ProportionModelResult:
         n_draws: int | None = None,
     ) -> pd.DataFrame:
         """
-        Tabulate the posterior mean marginal deviation of every worm at every molt.
+        Tabulate the posterior mean marginal deviation of every worm at every timepoint.
 
         Deviations exclude the worm intercepts. With ``relative_to="own"`` they are
         residuals around the worm's genotype curve (``f`` plus its
@@ -1424,9 +1839,11 @@ class ProportionModelResult:
 
         Returns:
             pd.DataFrame: One row per worm with ``worm_id``, ``condition_id``,
-                ``experiment`` and one column per molt (named by the molt index)
+                ``experiment`` and one column per timepoint, in development order,
                 holding the deviation in natural-log units, NaN where the worm has
-                no observation at that molt.
+                no observation at that timepoint. Timepoint columns are named by
+                the molt index for ecdysis sampling and by ``timepoint_label``
+                otherwise.
 
         Raises:
             ValueError: If ``relative_to`` is not ``"own"`` or ``"reference"``.
@@ -1443,8 +1860,8 @@ class ProportionModelResult:
         deviation = self.table.assign(
             deviation=self.table["log_y"].to_numpy() - fitted.mean(axis=0)
         )
-        wide = deviation.pivot(index="worm_id", columns="molt", values="deviation")
-        wide.columns.name = None
+        wide = deviation.pivot(index="worm_id", columns="timepoint", values="deviation")
+        wide.columns = [self._deviation_column(t) for t in wide.columns]
         worms = self.table.drop_duplicates("worm_id")[
             ["worm_id", "condition_id", "experiment"]
         ]
@@ -1464,7 +1881,7 @@ class ProportionModelResult:
         Estimate the fraction of each cell's worms that lie outside the reference cell's range of worms.
 
         For each worm and posterior draw, the worm's deviation is the mean over its
-        ``n_i`` observed molts of ``log_y - f(log_x) - e_exp``. It is compared with
+        ``n_i`` observed timepoints of ``log_y - f(log_x) - e_exp``. It is compared with
         the central ``prob`` interval of the same statistic for a new
         reference-cell worm observed ``n_i`` times: a worm intercept
         ``Normal(0, tau_ref)`` plus the mean of ``n_i`` residuals
@@ -1487,7 +1904,7 @@ class ProportionModelResult:
             n_draws (int or None): Number of evenly spaced posterior draws to use;
                 ``None`` uses all. (default: None)
             n_simulations (int): Simulated reference worms per draw and number of
-                molts, for a Student-t likelihood. (default: 2000)
+                timepoints, for a Student-t likelihood. (default: 2000)
             interval_prob (float): Probability mass of the equal-tailed
                 intervals of the fractions over draws. (default: 0.95)
 
@@ -1589,7 +2006,7 @@ class ProportionModelResult:
         For each selected posterior draw, every worm gets a new intercept from
         ``Normal(0, tau)`` of its cell and every observation a new residual from
         ``Normal(0, sigma)`` (or ``StudentT(nu, 0, sigma)``) of its cell, keeping
-        the observed worms, molts and ``log_x``. The replicated marginal residual
+        the observed worms, timepoints and ``log_x``. The replicated marginal residual
         around the cell's own curve is then intercept plus residual; the
         observed one is ``log_y`` minus the same draw's fitted value without worm
         intercepts. Pass both to ``ppc_summary``.
@@ -1603,8 +2020,8 @@ class ProportionModelResult:
         Returns:
             tuple[pd.DataFrame, pd.DataFrame]: ``(replicated, observed)``, each
                 with columns ``draw`` (flattened posterior draw index), ``cell``,
-                ``molt`` and ``residual`` (natural-log units), one row per draw ×
-                observation in draw-major order.
+                ``molt``, ``timepoint`` and ``residual`` (natural-log units), one
+                row per draw × observation in draw-major order.
         """
         rng = self._rng(random_seed)
         index = self._draw_index(n_draws)
@@ -1638,6 +2055,7 @@ class ProportionModelResult:
             "draw": np.repeat(draw_ids, n_rows),
             "cell": np.tile(row_cells.to_numpy(), n_samples),
             "molt": np.tile(self.table["molt"].to_numpy(), n_samples),
+            "timepoint": np.tile(self.table["timepoint"].to_numpy(), n_samples),
         }
         return (
             pd.DataFrame({**design, "residual": replicated.ravel()}),
@@ -1712,7 +2130,7 @@ class ProportionModelResult:
                 rows.append(row)
         return pd.DataFrame(rows)
 
-    def molt_dispersion_tests(
+    def timepoint_dispersion_tests(
         self,
         comparisons: (
             list[tuple[int | str | dict[str, str], int | str | dict[str, str]]] | None
@@ -1721,7 +2139,7 @@ class ProportionModelResult:
         n_draws: int | None = None,
     ) -> pd.DataFrame:
         """
-        Test, molt by molt, whether two genotype cells differ in the spread of their residuals.
+        Test, timepoint by timepoint, whether two genotype cells differ in the spread of their residuals.
 
         Each test is a Brown–Forsythe test (``scipy.stats.levene`` with
         ``center="median"``) on the posterior mean marginal residuals around each
@@ -1729,27 +2147,27 @@ class ProportionModelResult:
         and only spread is compared. The p-values are adjusted with Holm's
         step-down procedure (Holm 1979, Scand J Stat 6:65), which controls the
         family-wise error rate under any dependence between the tests. The
-        per-molt tests of a comparison share worms and are therefore positively
-        correlated, which makes Holm conservative here. Tests with fewer than 2
-        observations in a cell are not run (NaN) and do not count toward the
-        family.
+        per-timepoint tests of a comparison share worms and are therefore
+        positively correlated, which makes Holm conservative here. Tests with
+        fewer than 2 observations in a cell are not run (NaN) and do not count
+        toward the family. ``molt_dispersion_tests`` is an alias.
 
         Parameters:
             comparisons (list[tuple] or None): Pairs ``(cell_a, cell_b)``, each a
                 condition id, cell label or dict of factor levels; ``None``
                 compares each non-reference cell with the reference cell.
                 (default: None)
-            family (str): ``"all"`` adjusts over every comparison × molt of the
-                call; ``"comparison"`` adjusts over the molts within each
+            family (str): ``"all"`` adjusts over every comparison × timepoint of
+                the call; ``"comparison"`` adjusts over the timepoints within each
                 comparison. (default: "all")
             n_draws (int or None): Number of evenly spaced posterior draws used for
                 the residuals; ``None`` uses all. (default: None)
 
         Returns:
-            pd.DataFrame: One row per comparison × molt with ``comparison``
+            pd.DataFrame: One row per comparison × timepoint with ``comparison``
                 (``"cell_a vs cell_b"``), ``cell_a``, ``cell_b``, ``molt``,
-                ``n_a``, ``n_b``, ``statistic``, ``p_raw``, ``p_holm`` and
-                ``family_size``.
+                ``timepoint``, ``timepoint_label``, ``n_a``, ``n_b``,
+                ``statistic``, ``p_raw``, ``p_holm`` and ``family_size``.
 
         Raises:
             ValueError: If ``family`` is unknown or a cell is not fitted.
@@ -1768,14 +2186,14 @@ class ProportionModelResult:
         )
         residual = self.table["log_y"].to_numpy() - fitted.mean(axis=0)
         row_cells = self._row_cells().to_numpy()
-        molts = self.table["molt"].to_numpy()
+        timepoints = self.table["timepoint"].to_numpy()
 
         rows = []
         for cell_a, cell_b in pairs:
             in_pair = np.isin(row_cells, [cell_a, cell_b])
-            for molt in sorted(np.unique(molts[in_pair])):
-                a = residual[(row_cells == cell_a) & (molts == molt)]
-                b = residual[(row_cells == cell_b) & (molts == molt)]
+            for timepoint, molt, label in _timepoint_groups(self.table[in_pair]):
+                a = residual[(row_cells == cell_a) & (timepoints == timepoint)]
+                b = residual[(row_cells == cell_b) & (timepoints == timepoint)]
                 statistic = p_raw = np.nan
                 if len(a) >= 2 and len(b) >= 2:
                     statistic, p_raw = levene(a, b, center="median")
@@ -1785,6 +2203,8 @@ class ProportionModelResult:
                         "cell_a": cell_a,
                         "cell_b": cell_b,
                         "molt": molt,
+                        "timepoint": timepoint,
+                        "timepoint_label": label,
                         "n_a": len(a),
                         "n_b": len(b),
                         "statistic": float(statistic),
@@ -1798,6 +2218,8 @@ class ProportionModelResult:
                 "cell_a",
                 "cell_b",
                 "molt",
+                "timepoint",
+                "timepoint_label",
                 "n_a",
                 "n_b",
                 "statistic",
@@ -1823,6 +2245,8 @@ class ProportionModelResult:
             tests.loc[members, "family_size"] = len(tested)
         return tests
 
+    molt_dispersion_tests = timepoint_dispersion_tests
+
 
 def _parameter_name(
     kind: str, effect: float | str, cell: float | str, label: str | None
@@ -1844,6 +2268,18 @@ def _parameter_name(
         if isinstance(index, str):
             return f"{kind}[{index}]"
     return kind
+
+
+def _timepoint_groups(rows: pd.DataFrame) -> list[tuple[float, int, str]]:
+    """``(timepoint, molt, timepoint_label)`` of each timepoint present in ``rows``, in development order."""
+    unique = rows.drop_duplicates("timepoint").sort_values("timepoint")
+    return list(
+        zip(
+            unique["timepoint"].tolist(),
+            unique["molt"].tolist(),
+            unique["timepoint_label"].tolist(),
+        )
+    )
 
 
 def _check_prob(prob: float) -> None:
@@ -2091,11 +2527,130 @@ def _sample_proportion_model(
     )
 
 
-def _max_abs_log_misfit(misfit: pd.DataFrame) -> tuple[float, int]:
-    """Largest absolute posterior-mean per-molt residual in log units, and its molt."""
+def _max_abs_log_misfit(misfit: pd.DataFrame) -> tuple[float, str]:
+    """Largest absolute posterior-mean per-timepoint residual in log units, and its timepoint label."""
     log_misfit = np.abs(np.log1p(misfit["mean_percent"].to_numpy() / 100))
     worst = int(np.argmax(log_misfit))
-    return float(log_misfit[worst]), misfit["molt"].iloc[worst]
+    return float(log_misfit[worst]), misfit["timepoint_label"].iloc[worst]
+
+
+def to_json_compatible(value: object) -> object:
+    """
+    Convert a value to plain JSON types, recursively.
+
+    NumPy arrays and tuples become lists, NumPy scalars become Python scalars,
+    dict keys become strings, and any other object becomes its ``repr``. Two
+    values that are equal after conversion serialize to the same JSON.
+
+    Parameters:
+        value (object): Value to convert.
+
+    Returns:
+        object: ``None``, a bool, int, float, str, list or dict.
+    """
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, np.ndarray):
+        return to_json_compatible(value.tolist())
+    if isinstance(value, dict):
+        return {str(key): to_json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_json_compatible(item) for item in value]
+    return repr(value)
+
+
+def _git_commit() -> str | None:
+    """Commit of the git checkout holding this module, or ``None`` outside one."""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout.strip() or None
+
+
+def _package_version() -> str | None:
+    try:
+        return version("align_toolbox")
+    except PackageNotFoundError:
+        return None
+
+
+def fit_provenance(table: pd.DataFrame, fit_arguments: dict) -> dict:
+    """
+    Describe the data, settings and software of a proportion model fit.
+
+    Parameters:
+        table (pd.DataFrame): Table the model is fitted on, from
+            ``build_proportion_table``.
+        fit_arguments (dict): Every argument of ``fit_proportion_model`` but the
+            table.
+
+    Returns:
+        dict: JSON-compatible record with ``sampling``, ``percentages``,
+            ``column_x``, ``column_y``, ``conditions``, ``remove_hatch``,
+            ``lmbda``, ``medfilt_window`` and ``bspline_order`` (from
+            ``table.attrs``, ``None`` when absent),
+            ``condition_ids``, the coding inputs ``factors``, ``reference`` and
+            ``reference_condition``, ``fit_arguments``, ``priors`` (the prior
+            constants of the model), ``data_hash`` (``table_data_hash``),
+            ``align_toolbox_version``, ``git_commit`` (``None`` outside a git
+            checkout) and ``created`` (UTC, ISO 8601).
+    """
+    attrs = table.attrs
+    return to_json_compatible(
+        {
+            "sampling": attrs.get("sampling", "ecdysis"),
+            "percentages": attrs.get("percentages"),
+            "column_x": attrs.get("column_x"),
+            "column_y": attrs.get("column_y"),
+            "conditions": attrs.get("conditions"),
+            "remove_hatch": attrs.get("remove_hatch"),
+            "lmbda": attrs.get("lmbda"),
+            "medfilt_window": attrs.get("medfilt_window"),
+            "bspline_order": attrs.get("bspline_order"),
+            "condition_ids": sorted(int(c) for c in table["condition_id"].unique()),
+            "factors": fit_arguments.get("factors"),
+            "reference": fit_arguments.get("reference"),
+            "reference_condition": fit_arguments.get("reference_condition"),
+            "fit_arguments": fit_arguments,
+            "priors": {
+                "intercept_sd": INTERCEPT_PRIOR_SD,
+                "slope_mean": SLOPE_PRIOR_MEAN,
+                "slope_sd": SLOPE_PRIOR_SD,
+                "effect_sd": EFFECT_PRIOR_SD,
+                "experiment_sd": EXPERIMENT_PRIOR_SD,
+                "scale_sd": SCALE_PRIOR_SD,
+                "nu_alpha": NU_PRIOR_ALPHA,
+                "nu_beta": NU_PRIOR_BETA,
+                "spline_degree": SPLINE_DEGREE,
+            },
+            "data_hash": table_data_hash(table),
+            "align_toolbox_version": _package_version(),
+            "git_commit": _git_commit(),
+            "created": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+def _with_provenance(
+    result: ProportionModelResult, table: pd.DataFrame, fit_arguments: dict
+) -> ProportionModelResult:
+    """Set ``result.provenance``, adding the centering point and reference shape used."""
+    result.provenance = fit_provenance(table, fit_arguments)
+    result.provenance["x_ref_used"] = float(result.x_ref)
+    result.provenance["reference_shape_used"] = result.reference_shape_used
+    return result
 
 
 def fit_proportion_model(
@@ -2147,8 +2702,8 @@ def fit_proportion_model(
     boundary slope.
 
     With ``reference_shape="auto"``, the line is fitted first; if the largest
-    absolute posterior-mean marginal reference residual of a molt (see
-    ``ProportionModelResult.reference_residuals_by_molt``) exceeds
+    absolute posterior-mean marginal reference residual of a timepoint (see
+    ``ProportionModelResult.reference_residuals_by_timepoint``) exceeds
     ``log(1 + linearity_threshold)``, the model is refitted with the spline. The
     decision and the maximum misfit are logged at INFO level.
 
@@ -2178,7 +2733,7 @@ def fit_proportion_model(
             default. (default: None)
         reference_shape (str): ``"linear"``, ``"spline"`` or ``"auto"``.
             (default: "auto")
-        linearity_threshold (float): Per-molt misfit of the line, as a fraction,
+        linearity_threshold (float): Per-timepoint misfit of the line, as a fraction,
             above which ``"auto"`` switches to the spline. (default: 0.03)
         n_knots (int): Number of interior spline knots. (default: 10)
         smooth_sd_prior_upper (float): Upper value of the ``sd_s`` prior, in
@@ -2188,8 +2743,9 @@ def fit_proportion_model(
 
     Returns:
         ProportionModelResult: Posterior, data, coding and diagnostics of the
-            selected fit, with the reference shape used and the per-molt
-            misfit tables of the fits that were made. A warning is emitted if
+            selected fit, with the reference shape used, the per-timepoint
+            misfit tables of the fits that were made and ``provenance`` (see
+            ``fit_provenance``). A warning is emitted if
             R-hat exceeds 1.01, an ESS is below 400, or any transition diverged.
 
     Raises:
@@ -2197,6 +2753,7 @@ def fit_proportion_model(
             ``random_seed`` is not an int, the table is empty, the spline
             settings are invalid, or the genotype coding is invalid.
     """
+    fit_arguments = {name: value for name, value in locals().items() if name != "table"}
     if likelihood not in LIKELIHOODS:
         raise ValueError(
             f"Invalid likelihood {likelihood!r}; expected one of {LIKELIHOODS}."
@@ -2260,31 +2817,32 @@ def fit_proportion_model(
     linear_misfit = None
     if reference_shape != "spline":
         result = sample(None)
-        linear_misfit = result.reference_residuals_by_molt()
+        linear_misfit = result.reference_residuals_by_timepoint()
         result.linear_misfit = linear_misfit
         if reference_shape == "linear":
-            return result
-        max_misfit, worst_molt = _max_abs_log_misfit(linear_misfit)
+            return _with_provenance(result, table, fit_arguments)
+        max_misfit, worst_timepoint = _max_abs_log_misfit(linear_misfit)
         use_spline = max_misfit > np.log1p(linearity_threshold)
         logger.info(
-            "Proportion model reference shape: the line's largest per-molt misfit "
-            "is %.2f%% (log-ratio %.4f, molt %s) against a threshold of %.2f%%; %s.",
+            "Proportion model reference shape: the line's largest per-timepoint "
+            "misfit is %.2f%% (log-ratio %.4f, at %s) against a threshold of "
+            "%.2f%%; %s.",
             100 * np.expm1(max_misfit),
             max_misfit,
-            worst_molt,
+            worst_timepoint,
             100 * linearity_threshold,
             "refitting with a spline" if use_spline else "keeping the line",
         )
         result.linearity_threshold = linearity_threshold
         if not use_spline:
-            return result
+            return _with_provenance(result, table, fit_arguments)
 
     result = sample(spline_basis)
     result.linear_misfit = linear_misfit
-    result.spline_misfit = result.reference_residuals_by_molt()
+    result.spline_misfit = result.reference_residuals_by_timepoint()
     if reference_shape == "auto":
         result.linearity_threshold = linearity_threshold
-    return result
+    return _with_provenance(result, table, fit_arguments)
 
 
 # PER-EXPERIMENT FITS

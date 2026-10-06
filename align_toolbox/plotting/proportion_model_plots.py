@@ -22,6 +22,7 @@ from align_toolbox.data_analysis.proportion_model import (
     SINGLE_FACTOR_NAME,
     GenotypeCoding,
     ProportionModelResult,
+    _add_timepoint_columns,
     compare_experiments,
 )
 
@@ -52,6 +53,7 @@ MISFIT_STYLES = {"line": ("o", "0.15"), "spline": ("s", "0.55")}
 REPLICATE_COLOR = "0.6"
 
 CellSpec = int | str | dict[str, str]
+TimepointSpec = int | float | str
 
 
 # SHARED HELPERS
@@ -170,9 +172,9 @@ def _reference_range(result: ProportionModelResult) -> tuple[float, float]:
 
 
 def _centroid_range(result: ProportionModelResult, cell: str) -> tuple[float, float]:
-    """Min and max over molts of a cell's mean ``log_x`` at each molt."""
+    """Min and max over timepoints of a cell's mean ``log_x`` at each timepoint."""
     rows = _row_cells(result) == cell
-    centroids = result.table.loc[rows].groupby("molt")["log_x"].mean()
+    centroids = result.table.loc[rows].groupby("timepoint")["log_x"].mean()
     return float(centroids.min()), float(centroids.max())
 
 
@@ -180,6 +182,16 @@ def _measurement_names(result: ProportionModelResult) -> tuple[str, str]:
     """Names of X and Y from ``table.attrs`` (``"column_x"``, ``"column_y"``), else generic ones."""
     attrs = result.table.attrs
     return attrs.get("column_x", DEFAULT_X_NAME), attrs.get("column_y", DEFAULT_Y_NAME)
+
+
+def _timepoint_noun(result: ProportionModelResult) -> str:
+    """``"molt"`` for ecdysis sampling, else ``"timepoint"``."""
+    return "molt" if result.sampling == "ecdysis" else "timepoint"
+
+
+def _timepoint_axis_label(result: ProportionModelResult) -> str:
+    """Default label of an axis of timepoints."""
+    return "Molt" if result.sampling == "ecdysis" else "Development"
 
 
 def _grid_with_bounds(
@@ -468,9 +480,9 @@ def plot_proportion_scaling(
     legend_placement: str | None = "outside right",
 ) -> matplotlib.figure.Figure:
     """
-    Plot each genotype's per-molt geometric means of Y against X on log–log axes, with the reference fit.
+    Plot each genotype's per-timepoint geometric means of Y against X on log–log axes, with the reference fit.
 
-    Points are ``exp(mean)`` of ``log_x`` and ``log_y`` from ``molt_positions``
+    Points are ``exp(mean)`` of ``log_x`` and ``log_y`` from ``timepoint_positions``
     with asymmetric bars ``exp(mean ± sd)``. The reference curve from
     ``reference_curve`` is solid inside the reference cell's ``log_x`` range and
     dashed where it is extrapolated, with its 95% credible band and, lighter, the
@@ -514,7 +526,7 @@ def plot_proportion_scaling(
     x_name, y_name = _measurement_names(result)
     fig, ax, owns_figure = _single_axes(ax, ax_size)
     row_cells = _row_cells(result)
-    positions = result.molt_positions()
+    positions = result.timepoint_positions()
 
     for cell in selected:
         color = color_of[cell]
@@ -529,10 +541,11 @@ def plot_proportion_scaling(
                 linewidths=0,
                 gid=f"points|{cell}",
             )
-        molts = positions[positions["cell"] == cell]
-        x_mean, y_mean = molts["log_x_mean"].to_numpy(), molts["log_y_mean"].to_numpy()
-        x_sd = np.nan_to_num(molts["log_x_sd"].to_numpy())
-        y_sd = np.nan_to_num(molts["log_y_sd"].to_numpy())
+        timepoints = positions[positions["cell"] == cell]
+        x_mean = timepoints["log_x_mean"].to_numpy()
+        y_mean = timepoints["log_y_mean"].to_numpy()
+        x_sd = np.nan_to_num(timepoints["log_x_sd"].to_numpy())
+        y_sd = np.nan_to_num(timepoints["log_y_sd"].to_numpy())
         ax.errorbar(
             np.exp(x_mean),
             np.exp(y_mean),
@@ -621,12 +634,13 @@ def plot_offset_curves(
     The reference cell is the line at 0, with a band showing the 95% band of
     ``reference_curve`` around its mean, i.e. how precisely the reference curve
     itself is known. Bands and curves of every cell span only from its first to
-    its last molt centroid, the cell's mean ``log_x`` at a molt. Each
+    its last timepoint centroid, the cell's mean ``log_x`` at a timepoint. Each
     non-reference cell's ``group_offset_curve`` is solid inside the reference
     cell's overall observed ``log_x`` range, including gaps between reference
-    molts, and dashed beyond it. Markers sit at each cell's molt centroids, the
-    reference cell included, show the observed or the model offset from
-    ``molt_positions`` with its interval, and are joined by a faint dotted line.
+    timepoints, and dashed beyond it. Markers sit at each cell's timepoint
+    centroids, the reference cell included, show the observed or the model
+    offset from ``timepoint_positions`` with its interval, and are joined by a
+    faint dotted line.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
@@ -667,7 +681,7 @@ def plot_offset_curves(
     x_name, y_name = _measurement_names(result)
     fig, ax, owns_figure = _single_axes(ax, ax_size)
     reference_lower, reference_upper = _reference_range(result)
-    positions = result.molt_positions() if markers is not None else None
+    positions = result.timepoint_positions() if markers is not None else None
 
     ax.axhline(
         0,
@@ -718,9 +732,9 @@ def plot_offset_curves(
     if markers is not None:
         prefix = f"{markers}_offset"
         for cell in [reference, *selected]:
-            molts = positions[positions["cell"] == cell]
-            center = molts[f"{prefix}_mean_percent"].to_numpy()
-            centroids = np.exp(molts["log_x_mean"].to_numpy(dtype=float))
+            timepoints = positions[positions["cell"] == cell]
+            center = timepoints[f"{prefix}_mean_percent"].to_numpy()
+            centroids = np.exp(timepoints["log_x_mean"].to_numpy(dtype=float))
             ax.plot(
                 centroids,
                 center,
@@ -736,8 +750,8 @@ def plot_offset_curves(
                 center,
                 yerr=_interval_errors(
                     center,
-                    molts[f"{prefix}_lower_percent"],
-                    molts[f"{prefix}_upper_percent"],
+                    timepoints[f"{prefix}_lower_percent"],
+                    timepoints[f"{prefix}_upper_percent"],
                 ),
                 fmt="o",
                 ms=4,
@@ -768,6 +782,7 @@ def plot_genotype_interaction(
     n_draws: int | None = None,
     colors: dict | list | None = None,
     labels: dict | list | None = None,
+    title: str | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
     ax: matplotlib.axes.Axes | None = None,
@@ -803,6 +818,8 @@ def plot_genotype_interaction(
             label, or one per cell in ``coding.cells`` order. (default: None)
         labels (dict, list or None): Cell display names, like ``colors``.
             (default: None)
+        title (str or None): Axes title; ``None`` uses the default, ``""``
+            hides it. (default: None)
         x_label (str or None): X-axis label; defaults to ``x_factor``.
             (default: None)
         y_label (str or None): Y-axis label. (default: None)
@@ -913,10 +930,9 @@ def plot_genotype_interaction(
                 )
 
     size = np.exp(offsets["log_x"].iloc[0])
-    ax.set_title(
-        f"At {x_name} = {size:.3g}" + (" (x_ref)" if log_x is None else ""),
-        fontsize="medium",
-    )
+    if title is None:
+        title = f"At {x_name} = {size:.3g}" + (" (x_ref)" if log_x is None else "")
+    ax.set_title(title, fontsize="medium")
     ax.set_xticks(range(len(x_levels)), x_levels)
     ax.set_xlim(-0.5, len(x_levels) - 0.5)
     ax.set_xlabel(x_factor if x_label is None else x_label)
@@ -1059,8 +1075,8 @@ def plot_variance_components(
 
 def plot_individual_consistency(
     result: ProportionModelResult,
-    molt_a: int,
-    molt_b: int,
+    molt_a: TimepointSpec,
+    molt_b: TimepointSpec,
     relative_to: Literal["own", "reference"] = "own",
     cells: list[CellSpec] | None = None,
     n_draws: int | None = None,
@@ -1074,18 +1090,20 @@ def plot_individual_consistency(
     legend_placement: str | None = None,
 ) -> matplotlib.figure.Figure:
     """
-    Scatter each worm's deviation at one molt against another, one panel per genotype.
+    Scatter each worm's deviation at one timepoint against another, one panel per genotype.
 
     Deviations come from ``worm_deviations(relative_to)`` and are shown in
     percent. Every panel has the identity line and the same, equal x and y
     limits, and is annotated with its number of worms and the cell's
     repeatability from ``repeatability`` (mean and interval). Worms missing
-    either molt are dropped and counted.
+    either timepoint are dropped and counted.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
-        molt_a (int): Molt on the x axis.
-        molt_b (int): Molt on the y axis.
+        molt_a (int, float or str): Timepoint on the x axis: a molt number
+            (molt ``k`` is timepoint ``k / 4``), a timepoint value or a timepoint
+            label, as in ``ProportionModelResult.resolve_timepoint``.
+        molt_b (int, float or str): Timepoint on the y axis, likewise.
         relative_to (str): ``"own"`` (residual around the genotype's curve) or
             ``"reference"`` (deviation from the reference curve).
             (default: "own")
@@ -1111,13 +1129,14 @@ def plot_individual_consistency(
         matplotlib.figure.Figure: The figure holding the plot.
 
     Raises:
-        ValueError: If ``molt_a`` or ``molt_b`` is not a molt of the table.
+        ValueError: If ``molt_a`` or ``molt_b`` is not a timepoint of the table.
     """
+    timepoint_a, timepoint_b = (result.resolve_timepoint(t) for t in (molt_a, molt_b))
+    column_a, column_b = (
+        result._deviation_column(t) for t in (timepoint_a, timepoint_b)
+    )
+    label_of_timepoint = result.timepoints().set_index("timepoint")["timepoint_label"]
     deviations = result.worm_deviations(relative_to, n_draws=n_draws)
-    molts = sorted(result.table["molt"].unique())
-    for molt in (molt_a, molt_b):
-        if molt not in molts:
-            raise ValueError(f"Molt {molt!r} is not in the table; molts are {molts}.")
     color_of, label_of = _cell_styles(result, colors, labels)
     selected = _resolve_cells(result, cells)
     fig, axes, owns_figure = _panel_axes(len(selected), ax, ax_size, ncols)
@@ -1128,10 +1147,10 @@ def plot_individual_consistency(
 
     lowest, highest = np.inf, -np.inf
     for panel, cell in zip(axes, selected):
-        values = deviations.loc[worm_cells == cell, [molt_a, molt_b]]
+        values = deviations.loc[worm_cells == cell, [column_a, column_b]]
         complete = values.dropna()
-        a = log_ratio_to_percentage(complete[molt_a].to_numpy())
-        b = log_ratio_to_percentage(complete[molt_b].to_numpy())
+        a = log_ratio_to_percentage(complete[column_a].to_numpy())
+        b = log_ratio_to_percentage(complete[column_b].to_numpy())
         panel.scatter(
             a,
             b,
@@ -1149,7 +1168,7 @@ def plot_individual_consistency(
         n_dropped = len(values) - len(complete)
         text = f"n = {len(complete)}"
         if n_dropped:
-            text += f" ({n_dropped} missing a molt)"
+            text += f" ({n_dropped} missing a {_timepoint_noun(result)})"
         text += (
             f"\nR = {row['repeatability_mean']:.2f} "
             f"[{row['repeatability_lower']:.2f}, {row['repeatability_upper']:.2f}]"
@@ -1165,8 +1184,16 @@ def plot_individual_consistency(
             gid=f"annotation|{cell}",
         )
         panel.set_title(label_of[cell], fontsize="medium")
-        panel.set_xlabel(f"Deviation at M{molt_a} (%)" if x_label is None else x_label)
-        panel.set_ylabel(f"Deviation at M{molt_b} (%)" if y_label is None else y_label)
+        panel.set_xlabel(
+            f"Deviation at {label_of_timepoint[timepoint_a]} (%)"
+            if x_label is None
+            else x_label
+        )
+        panel.set_ylabel(
+            f"Deviation at {label_of_timepoint[timepoint_b]} (%)"
+            if y_label is None
+            else y_label
+        )
 
     if not np.isfinite(lowest):
         lowest, highest = -1.0, 1.0
@@ -1439,6 +1466,7 @@ def plot_effects_forest(
 def plot_linearity_check(
     result: ProportionModelResult,
     threshold: float | None = None,
+    title: str | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
     ax: matplotlib.axes.Axes | None = None,
@@ -1446,7 +1474,7 @@ def plot_linearity_check(
     legend_placement: str | None = "best",
 ) -> matplotlib.figure.Figure:
     """
-    Plot the reference cell's mean residual per molt for the line and spline reference fits.
+    Plot the reference cell's mean residual per timepoint for the line and spline reference fits.
 
     Points and intervals come from ``result.linear_misfit`` and, when present,
     ``result.spline_misfit``, dodged and labelled ``"line"`` and ``"spline"``.
@@ -1458,6 +1486,8 @@ def plot_linearity_check(
             table.
         threshold (float or None): Tolerated misfit as a fraction; ``None`` uses
             ``result.linearity_threshold``, else 0.03. (default: None)
+        title (str or None): Axes title; ``None`` uses the default, ``""``
+            hides it. (default: None)
         x_label (str or None): X-axis label. (default: None)
         y_label (str or None): Y-axis label. (default: None)
         ax (matplotlib.axes.Axes or None): Axes to draw into; no figure is
@@ -1474,7 +1504,7 @@ def plot_linearity_check(
         ValueError: If the result has neither misfit table.
     """
     tables = [
-        (name, table)
+        (name, _add_timepoint_columns(table))
         for name, table in (
             ("line", result.linear_misfit),
             ("spline", result.spline_misfit),
@@ -1491,8 +1521,12 @@ def plot_linearity_check(
             0.03 if result.linearity_threshold is None else result.linearity_threshold
         )
     fig, ax, owns_figure = _single_axes(ax, ax_size)
-    molts = sorted(set().union(*(table["molt"] for _, table in tables)))
-    position = {molt: i for i, molt in enumerate(molts)}
+    timepoints = (
+        pd.concat([table[["timepoint", "timepoint_label"]] for _, table in tables])
+        .drop_duplicates("timepoint")
+        .sort_values("timepoint")
+    )
+    position = {t: i for i, t in enumerate(timepoints["timepoint"])}
 
     ax.axhspan(
         log_ratio_to_percentage(-np.log1p(threshold)),
@@ -1507,7 +1541,7 @@ def plot_linearity_check(
         shift = 0.15 * (k - (len(tables) - 1) / 2)
         center = table["mean_percent"].to_numpy()
         ax.errorbar(
-            [position[m] + shift for m in table["molt"]],
+            [position[t] + shift for t in table["timepoint"]],
             center,
             yerr=_interval_errors(
                 center, table["lower_percent"], table["upper_percent"]
@@ -1519,12 +1553,12 @@ def plot_linearity_check(
             label=name,
             gid=f"misfit|{name}",
         )
-    ax.set_xticks(range(len(molts)), [f"M{m}" for m in molts])
-    ax.set_xlim(-0.5, len(molts) - 0.5)
-    ax.set_title(
-        f"Reference shape used: {result.reference_shape_used}", fontsize="medium"
-    )
-    ax.set_xlabel("Molt" if x_label is None else x_label)
+    ax.set_xticks(range(len(timepoints)), timepoints["timepoint_label"].tolist())
+    ax.set_xlim(-0.5, len(timepoints) - 0.5)
+    if title is None:
+        title = f"Reference shape used: {result.reference_shape_used}"
+    ax.set_title(title, fontsize="medium")
+    ax.set_xlabel(_timepoint_axis_label(result) if x_label is None else x_label)
     ax.set_ylabel(
         f"Reference residual (%, {INTERVAL_LABEL})" if y_label is None else y_label
     )
@@ -1805,7 +1839,7 @@ def plot_experiment_consistency(
     return _finish(fig, owns_figure)
 
 
-def plot_molt_dispersion(
+def plot_timepoint_dispersion(
     result: ProportionModelResult,
     comparisons: list[tuple[CellSpec, CellSpec]] | None = None,
     family: Literal["all", "comparison"] = "all",
@@ -1815,28 +1849,32 @@ def plot_molt_dispersion(
     ncols: int | None = None,
     colors: dict | list | None = None,
     labels: dict | list | None = None,
+    titles: dict | list | None = None,
     y_label: str | None = None,
     ax: matplotlib.axes.Axes | np.ndarray | list | None = None,
     ax_size: tuple[float, float] | None = None,
     legend_placement: str | None = "outside right",
 ) -> matplotlib.figure.Figure:
     """
-    Plot, molt by molt, each genotype's residuals around its own curve with dispersion tests.
+    Plot, timepoint by timepoint, each genotype's residuals around its own curve with dispersion tests.
 
-    Each molt is a panel of violins of the posterior mean marginal residuals from
-    ``residuals``, in percent. Brackets show the Holm-adjusted p-values
-    (``p_holm``) of the Brown–Forsythe tests from ``molt_dispersion_tests``;
-    tests that were not run get no bracket.
+    Each timepoint is a panel of violins of the posterior mean marginal
+    residuals from ``residuals``, in percent, titled by its ``timepoint_label``
+    unless ``titles`` says otherwise.
+    Brackets show the Holm-adjusted p-values (``p_holm``) of the Brown–Forsythe
+    tests from ``timepoint_dispersion_tests``; tests that were not run get no
+    bracket. ``plot_molt_dispersion`` is an alias.
 
     Parameters:
         result (ProportionModelResult): Fitted model.
         comparisons (list[tuple] or None): Pairs of cells to test, as in
-            ``molt_dispersion_tests``; ``None`` compares each non-reference cell
-            with the reference. Ignored when ``tests`` is given. (default: None)
+            ``timepoint_dispersion_tests``; ``None`` compares each non-reference
+            cell with the reference. Ignored when ``tests`` is given.
+            (default: None)
         family (str): ``"all"`` or ``"comparison"``, as in
-            ``molt_dispersion_tests``. (default: "all")
+            ``timepoint_dispersion_tests``. (default: "all")
         show_swarm (bool): Overlay the residuals as a swarm. (default: True)
-        tests (pd.DataFrame or None): Precomputed ``molt_dispersion_tests``
+        tests (pd.DataFrame or None): Precomputed ``timepoint_dispersion_tests``
             table; ``None`` computes it. (default: None)
         n_draws (int or None): Posterior draws used when computing the tests;
             ``None`` uses all. (default: None)
@@ -1845,9 +1883,13 @@ def plot_molt_dispersion(
             label, or one per cell in ``coding.cells`` order. (default: None)
         labels (dict, list or None): Cell display names, like ``colors``.
             (default: None)
+        titles (dict, list or None): Panel titles, either keyed by timepoint
+            (anything ``ProportionModelResult.resolve_timepoint`` accepts, e.g.
+            ``1``, ``"M1"`` or ``0.375``; timepoints left out keep their label)
+            or one per plotted timepoint in development order. (default: None)
         y_label (str or None): Y-axis label of the first panel. (default: None)
-        ax (Axes, np.ndarray, list or None): One axes per molt; no figure is
-            created or shown when given. (default: None)
+        ax (Axes, np.ndarray, list or None): One axes per timepoint; no figure
+            is created or shown when given. (default: None)
         ax_size (tuple[float, float] or None): Size in inches of each panel of a
             new figure. (default: None)
         legend_placement (str or None): Placement passed to ``add_legend``;
@@ -1855,9 +1897,15 @@ def plot_molt_dispersion(
 
     Returns:
         matplotlib.figure.Figure: The figure holding the plot.
+
+    Raises:
+        ValueError: If ``titles`` is a list whose length differs from the
+            number of timepoints, or a dict with a key that is not a timepoint
+            of the table.
     """
     if tests is None:
-        tests = result.molt_dispersion_tests(comparisons, family, n_draws)
+        tests = result.timepoint_dispersion_tests(comparisons, family, n_draws)
+    tests = _add_timepoint_columns(tests)
     coding = result.coding
     involved = set(tests["cell_a"]) | set(tests["cell_b"])
     plot_cells = [cell for cell in coding.cells if cell in involved]
@@ -1865,33 +1913,45 @@ def plot_molt_dispersion(
 
     residuals = result.residuals()
     residuals["cell"] = residuals["condition_id"].map(coding.cell_of_condition)
+    residuals["timepoint"] = result.table.loc[residuals.index, "timepoint"]
     residuals = residuals[residuals["cell"].isin(plot_cells)]
-    molts = sorted(residuals["molt"].unique())
-    order = {molt: i for i, molt in enumerate(molts)}
+    label_of_timepoint = result.timepoints().set_index("timepoint")["timepoint_label"]
+    timepoints = sorted(residuals["timepoint"].unique())
+    order = {timepoint: i for i, timepoint in enumerate(timepoints)}
+    title_of = label_of_timepoint.to_dict()
+    if isinstance(titles, dict):
+        title_of.update({result.resolve_timepoint(k): v for k, v in titles.items()})
+    elif titles is not None:
+        if len(titles) != len(timepoints):
+            raise ValueError(
+                f"Got {len(titles)} titles for {len(timepoints)} timepoints "
+                f"{[label_of_timepoint[t] for t in timepoints]}."
+            )
+        title_of.update(zip(timepoints, titles))
     data = pd.DataFrame(
         {
-            "Order": residuals["molt"].map(order).to_numpy(),
+            "Order": residuals["timepoint"].map(order).to_numpy(),
             "Condition": residuals["cell"].to_numpy(),
             "residual": residuals["residual"].to_numpy(),
         }
     )
     annotations = {}
-    for molt, group in tests.groupby("molt"):
+    for timepoint, group in tests.groupby("timepoint"):
         tested = group[group["p_holm"].notna()]
-        if molt in order:
-            annotations[order[molt]] = (
+        if timepoint in order:
+            annotations[order[timepoint]] = (
                 list(zip(tested["cell_a"], tested["cell_b"])),
                 [_format_p(p) for p in tested["p_holm"]],
             )
 
-    fig, axes, owns_figure = _panel_axes(len(molts), ax, ax_size, ncols)
+    fig, axes, owns_figure = _panel_axes(len(timepoints), ax, ax_size, ncols)
     _plot_violinplot(
         data,
         plot_cells,
         "residual",
         [color_of[cell] for cell in plot_cells],
         axes if len(axes) > 1 else axes[0],
-        titles=[f"M{molt}" for molt in molts],
+        titles=[title_of[timepoint] for timepoint in timepoints],
         share_y_axis=False,
         plot_significance=True,
         significance_pairs=None,
@@ -1914,3 +1974,6 @@ def plot_molt_dispersion(
         [label for _, label in extra],
     )
     return _finish(fig, owns_figure)
+
+
+plot_molt_dispersion = plot_timepoint_dispersion

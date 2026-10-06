@@ -673,6 +673,30 @@ def _get_death_and_arrest(filemap: pl.DataFrame) -> tuple[np.ndarray, np.ndarray
     return death[:, np.newaxis], arrest[:, np.newaxis]
 
 
+def get_time_and_ecdysis(condition_dict: dict) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Select the time base of a condition and the ecdysis times expressed in it.
+
+    Experiment time in hours is used when any of it is known, otherwise frame
+    indices.
+
+    Parameters:
+        condition_dict (dict) : Condition dict holding ``"experiment_time_hours"``,
+            ``"ecdysis_experiment_time_hours"``, ``"time"`` and ``"ecdysis_index"``.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray] : ``(time, ecdysis)``: the time of each frame,
+            of shape ``(n_points, n_frames)``, and the hatch and molt times, of shape
+            ``(n_points, 5)``.
+    """
+    if (~np.isnan(condition_dict["experiment_time_hours"])).any():
+        return (
+            condition_dict["experiment_time_hours"],
+            condition_dict["ecdysis_experiment_time_hours"],
+        )
+    return condition_dict["time"], condition_dict["ecdysis_index"]
+
+
 def _compute_values_at_molt(
     condition_dict: dict,
     column: str,
@@ -704,14 +728,7 @@ def _compute_values_at_molt(
     updated_values_at_molt = values_at_molt.copy()
 
     nan_indexes_values_mask = np.isnan(values_at_molt)
-    experiment_time = condition_dict["experiment_time_hours"]
-
-    if (~np.isnan(experiment_time)).any():
-        time = condition_dict["experiment_time_hours"]
-        ecdysis = condition_dict["ecdysis_experiment_time_hours"]
-    else:
-        time = condition_dict["time"]
-        ecdysis = condition_dict["ecdysis_index"]
+    time, ecdysis = get_time_and_ecdysis(condition_dict)
 
     non_nan_indexes_ecdysis_mask = np.invert(np.isnan(ecdysis))
 

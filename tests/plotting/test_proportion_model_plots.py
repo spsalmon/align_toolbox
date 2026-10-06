@@ -14,6 +14,10 @@ from xarray import Dataset, DataTree
 from align_toolbox.data_analysis import proportion_model as pmod
 from align_toolbox.plotting import proportion_model_plots as pmp
 from align_toolbox.plotting.proportions import log_ratio_to_percentage
+from tests.data_analysis.proportion_simulation import (
+    FIT_PERCENTAGES,
+    fit_series_proportions,
+)
 
 # 3 x 2 factorial; condition 1's worms are e^0.5 times bigger than the others'
 FACTORS = {
@@ -737,3 +741,133 @@ def test_effects_selected_by_exact_punctuated_names(punctuated_result):
     ).axes[0]
     assert [t.get_text() for t in ax.get_yticklabels()] == names
     assert _gid_cells(ax, "pooled|") == set(names)
+
+
+# TIMEPOINTS
+
+# the synthetic molts relabelled as development percentages, two per stage
+PERCENTAGE_OF_MOLT = {1: 0.2, 2: 0.25, 3: 0.6, 4: 0.7}
+PERCENTAGE_LABELS = ["20%", "M1", "60%", "70%"]
+
+
+@pytest.fixture(scope="module")
+def percentage_result(result):
+    table = result.table.copy()
+    table["timepoint"] = table["molt"].map(PERCENTAGE_OF_MOLT)
+    table["timepoint_label"] = table["molt"].map(
+        dict(zip([1, 2, 3, 4], PERCENTAGE_LABELS))
+    )
+    table["molt"] = table["molt"].map({1: 1, 2: 1, 3: 3, 4: 3})
+    table.attrs["sampling"] = "percentages"
+    fit = replace(result, table=table)
+    fit.linear_misfit = replace(
+        fit, spline_basis=None, reference_shape_used="linear"
+    ).reference_residuals_by_timepoint()
+    fit.spline_misfit = fit.reference_residuals_by_timepoint()
+    return fit
+
+
+def _tick_labels(ax):
+    return [t.get_text() for t in ax.get_xticklabels()]
+
+
+def test_ecdysis_plots_keep_molt_titles_and_ticks(result, tables):
+    fig = pmp.plot_molt_dispersion(result, tests=tables.dispersion, show_swarm=False)
+    assert [ax.get_title() for ax in fig.axes] == ["M1", "M2", "M3", "M4"]
+    ax = pmp.plot_linearity_check(result).axes[0]
+    assert _tick_labels(ax) == ["M1", "M2", "M3", "M4"]
+    assert ax.get_xlabel() == "Molt"
+    ax = pmp.plot_individual_consistency(result, 1, 3).axes[0]
+    assert (ax.get_xlabel(), ax.get_ylabel()) == (
+        "Deviation at M1 (%)",
+        "Deviation at M3 (%)",
+    )
+
+
+def test_timepoint_plots_draw_one_panel_or_marker_per_timepoint(percentage_result):
+    fig = pmp.plot_timepoint_dispersion(percentage_result, show_swarm=False)
+    assert [ax.get_title() for ax in fig.axes] == PERCENTAGE_LABELS
+
+    ax = pmp.plot_proportion_scaling(percentage_result).axes[0]
+    for line in _with_gid(ax, "molts|"):
+        assert len(line.get_xdata()) == len(PERCENTAGE_LABELS)
+
+    ax = pmp.plot_offset_curves(percentage_result).axes[0]
+    for line in _with_gid(ax, "offset_link|"):
+        assert len(line.get_xdata()) == len(PERCENTAGE_LABELS)
+
+    ax = pmp.plot_linearity_check(percentage_result).axes[0]
+    assert _tick_labels(ax) == PERCENTAGE_LABELS
+    assert ax.get_xlabel() == "Development"
+
+
+def test_timepoint_dispersion_titles_replace_timepoint_labels(percentage_result):
+    fig = pmp.plot_molt_dispersion(
+        percentage_result, show_swarm=False, titles={1: "first molt", 0.6: "60 %"}
+    )
+    assert [ax.get_title() for ax in fig.axes] == ["20%", "first molt", "60 %", "70%"]
+    titles = ["a", "b", "c", "d"]
+    fig = pmp.plot_molt_dispersion(percentage_result, show_swarm=False, titles=titles)
+    assert [ax.get_title() for ax in fig.axes] == titles
+    with pytest.raises(ValueError, match="3 titles for 4 timepoints"):
+        pmp.plot_molt_dispersion(percentage_result, titles=titles[:3])
+
+
+def test_individual_consistency_reads_ints_as_molts_with_percentages(
+    percentage_result,
+):
+    ax = pmp.plot_individual_consistency(percentage_result, 1, 0.7).axes[0]
+    assert ax.get_xlabel() == "Deviation at M1 (%)"
+    with pytest.raises(ValueError, match="not in the table"):
+        pmp.plot_individual_consistency(percentage_result, 1, 2)
+
+
+@pytest.mark.parametrize("timepoint_b", ["M1", "25%", 0.25, 1])
+def test_individual_consistency_accepts_timepoint_labels_and_values(
+    percentage_result, timepoint_b
+):
+    fig = pmp.plot_individual_consistency(percentage_result, "20%", timepoint_b)
+    ax = fig.axes[0]
+    assert (ax.get_xlabel(), ax.get_ylabel()) == (
+        "Deviation at 20% (%)",
+        "Deviation at M1 (%)",
+    )
+    # worm 0 of every condition misses the second timepoint
+    text = _with_gid(ax, "annotation|")[0].get_text()
+    assert text.startswith(f"n = {N_WORMS - 1} (1 missing a timepoint)")
+    deviations = percentage_result.worm_deviations()
+    cell = percentage_result.coding.reference_cell
+    in_cell = deviations["condition_id"].map(percentage_result.coding.cell_of_condition)
+    complete = deviations.loc[in_cell == cell, ["20%", "M1"]].dropna()
+    (points,) = _with_gid(ax, f"worms|{cell}")
+    np.testing.assert_allclose(
+        points.get_offsets(), log_ratio_to_percentage(complete.to_numpy())
+    )
+    with pytest.raises(ValueError, match="not in the table"):
+        pmp.plot_individual_consistency(percentage_result, "M2", "M1")
+
+
+@pytest.fixture(scope="module")
+def fitted_percentages():
+    return fit_series_proportions()
+
+
+@pytest.mark.slow
+def test_fitted_percentage_plots_use_timepoint_labels(fitted_percentages):
+    labels = ["10%", "20%", "M1", "40%", "60%", "M3", "90%", "M4"]
+    fig = pmp.plot_timepoint_dispersion(fitted_percentages, show_swarm=False)
+    assert [ax.get_title() for ax in fig.axes if ax.axison] == labels
+
+    ax = pmp.plot_proportion_scaling(fitted_percentages).axes[0]
+    markers = _with_gid(ax, "molts|")
+    assert len(markers) == len(fitted_percentages.coding.cells)
+    for line in markers:
+        assert len(line.get_xdata()) == len(FIT_PERCENTAGES)
+
+    ax = pmp.plot_linearity_check(fitted_percentages).axes[0]
+    assert _tick_labels(ax) == labels
+
+    for timepoint_b in ("M3", "75%", 0.75, 3):
+        fig = pmp.plot_individual_consistency(fitted_percentages, 1, timepoint_b)
+        assert fig.axes[0].get_xlabel() == "Deviation at M1 (%)"
+        assert fig.axes[0].get_ylabel() == "Deviation at M3 (%)"

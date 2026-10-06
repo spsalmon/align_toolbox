@@ -1,6 +1,10 @@
 """Simulated proportion data with known parameters for the proportion model tests."""
 
+from functools import cache
+
 import numpy as np
+
+from align_toolbox.data_analysis import proportion_model as pmod
 
 # log body size at molts 1-4: clusters ~0.1 wide, separated by gaps
 MOLT_CENTERS = np.array([10.0, 11.0, 12.0, 13.0])
@@ -147,3 +151,102 @@ def simulate_allometry(seed, exponent_range=(2.4, 3.3), cells=ALLOMETRY_CELLS):
             }
         )
     return conditions_struct
+
+
+# log body size grows by SERIES_GROWTH over development, from SERIES_START
+SERIES_START = 10.0
+SERIES_GROWTH = 3.0
+SERIES_CELLS = {
+    0: {"n": 40, "beta": 0.0},
+    1: {"n": 40, "beta": 0.10},
+}
+# frames every 10 minutes, development from about 2 h to about 46 h
+SERIES_HOURS = np.arange(0.0, 50.0, 1 / 6)
+STAGE_HOURS = np.array([12.0, 9.0, 10.0, 13.0])
+
+
+def development_fraction(time, ecdysis):
+    """Fraction of development (L1–L4) at ``time``, linear within each stage, 0 before hatch and 1 after molt 4."""
+    return np.interp(time, ecdysis, np.linspace(0, 1, 5))
+
+
+def simulate_series_proportions(seed, cells=SERIES_CELLS):
+    """
+    Raw time series of shape ``(n_worms, n_frames)``, shaped like ``build_plotting_struct`` output.
+
+    Each worm hatches at ``Uniform(1, 3)`` h and its stages last ``STAGE_HOURS``
+    scaled by ``1 + Normal(0, 0.05)``. ``log_x`` rises linearly with the
+    development fraction, plus a worm size ``Normal(0, 0.03)`` and a frame
+    residual ``Normal(0, 0.02)``; ``log_y = INTERCEPT + SLOPE * (log_x - X0) +
+    beta`` on the noiseless ``log_x``, plus an experiment effect, a worm
+    intercept ``Normal(0, 0.03)`` and a frame residual ``Normal(0, 0.02)``.
+    Worms of each condition alternate between two experiments, and every frame
+    passes QC.
+    """
+    rng = np.random.default_rng(seed)
+    paths = list(EXPERIMENTS)
+    n_frames = len(SERIES_HOURS)
+    conditions_struct = []
+    for condition_id, cell in cells.items():
+        n = cell["n"]
+        experiment = np.array([paths[i % 2] for i in range(n)])
+        durations = STAGE_HOURS * (1 + rng.normal(0, 0.05, (n, 4)))
+        ecdysis = np.cumsum(np.hstack([rng.uniform(1, 3, (n, 1)), durations]), axis=1)
+        fraction = np.array(
+            [development_fraction(SERIES_HOURS, worm) for worm in ecdysis]
+        )
+        log_x = SERIES_START + SERIES_GROWTH * fraction + rng.normal(0, 0.03, (n, 1))
+        log_y = (
+            INTERCEPT
+            + SLOPE * (log_x - X0)
+            + cell["beta"]
+            + np.array([EXPERIMENTS[e] for e in experiment])[:, np.newaxis]
+            + rng.normal(0, 0.03, (n, 1))
+            + rng.normal(0, 0.02, (n, n_frames))
+        )
+        log_x += rng.normal(0, 0.02, (n, n_frames))
+        conditions_struct.append(
+            {
+                "condition_id": condition_id,
+                "point": np.array([i // 2 for i in range(n)])[:, np.newaxis],
+                "experiment": experiment[:, np.newaxis],
+                "time": np.tile(np.arange(n_frames, dtype=float), (n, 1)),
+                "experiment_time_hours": np.tile(SERIES_HOURS, (n, 1)),
+                "ecdysis_index": ecdysis * 6,
+                "ecdysis_experiment_time_hours": ecdysis,
+                "body_qc": np.full((n, n_frames), "worm"),
+                "volume": np.exp(log_x),
+                "pharynx_volume": np.exp(log_y),
+            }
+        )
+    return conditions_struct
+
+
+# several timepoints per larval stage, molts included
+FIT_PERCENTAGES = (0.1, 0.2, 0.25, 0.4, 0.6, 0.75, 0.9, 1.0)
+
+
+@cache
+def fit_series_proportions():
+    """
+    Linear, group-variance fit at ``FIT_PERCENTAGES`` of ``simulate_series_proportions``.
+
+    Sampled briefly and shared by every test of the session that uses it.
+    """
+    table = pmod.build_proportion_table(
+        simulate_series_proportions(seed=3),
+        "volume",
+        "pharynx_volume",
+        list(SERIES_CELLS),
+        percentages=list(FIT_PERCENTAGES),
+    )
+    return pmod.fit_proportion_model(
+        table,
+        reference_condition=0,
+        group_variances=True,
+        reference_shape="linear",
+        draws=300,
+        tune=300,
+        chains=2,
+        random_seed=5,
+    )

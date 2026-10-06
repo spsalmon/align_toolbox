@@ -10,12 +10,16 @@ from scipy.stats import expon
 from xarray import Dataset, DataTree
 
 from align_toolbox.data_analysis import proportion_model as pmod
+from align_toolbox.plotting.plotting_structure import _compute_values_at_molt
 from tests.data_analysis.proportion_simulation import (
     ALLOMETRY_CELLS,
     ALLOMETRY_LOW_GAP_CELLS,
     CELLS,
     EXPERIMENTS,
+    FIT_PERCENTAGES,
+    SERIES_CELLS,
     X0,
+    fit_series_proportions,
     simulate_allometry,
     simulate_proportions,
 )
@@ -1668,3 +1672,286 @@ def test_fit_recovers_interaction_of_level_with_colon():
     double = offsets.loc["yap1=abt7, tir=col-10:TIR"]
     assert double["interaction_lower"] < 0.08 < double["interaction_upper"]
     assert double["expected_lower"] < 0.05 < double["expected_upper"]
+
+
+# SAMPLING AT DEVELOPMENT PERCENTAGES
+
+# hatch and molts in hours, stages of unequal length
+ECDYSIS = np.array([2.0, 14.0, 23.0, 33.0, 46.0])
+# frames every 10 minutes
+HOURS = np.arange(0.0, 50.0, 1 / 6)
+
+
+def _series_condition(x, y, ecdysis, qc=None):
+    n_worms, n_frames = np.shape(x)
+    ecdysis = np.broadcast_to(np.asarray(ecdysis, dtype=float), (n_worms, 5))
+    return {
+        "condition_id": 0,
+        "experiment": np.array(["/e"] * n_worms)[:, np.newaxis],
+        "point": np.arange(n_worms)[:, np.newaxis],
+        "time": np.tile(np.arange(n_frames, dtype=float), (n_worms, 1)),
+        "experiment_time_hours": np.tile(HOURS, (n_worms, 1)),
+        "ecdysis_index": ecdysis * 6,
+        "ecdysis_experiment_time_hours": ecdysis,
+        "qc": np.full((n_worms, n_frames), "worm") if qc is None else qc,
+        "x": np.asarray(x, dtype=float),
+        "y": np.asarray(y, dtype=float),
+    }
+
+
+def _hours_of_percentage(p, ecdysis=ECDYSIS):
+    """Hour at development percentage ``p``: stages are equal quarters of development."""
+    return np.interp(p, np.linspace(0, 1, 5), ecdysis)
+
+
+def test_percentages_map_linearly_onto_each_stage():
+    percentages = [0.0, 0.1, 0.25, 0.3, 0.5, 0.875, 1.0]
+    times = pmod.times_at_development_percentages(ECDYSIS[np.newaxis], percentages)
+    np.testing.assert_allclose(times[0], [2.0, 6.8, 14.0, 15.8, 23.0, 39.5, 46.0])
+    stage, _ = pmod.development_stages(percentages)
+    assert stage.tolist() == [1, 1, 1, 2, 2, 4, 4]
+
+
+def _x_of_hours(t):
+    return np.exp(10.0 + 0.06 * t)
+
+
+def _y_of_hours(t):
+    return np.exp(8.0 + 0.04 * t + 0.1 * np.sin(t / 5.0))
+
+
+def test_percentage_table_samples_the_smooth_series_at_mapped_times():
+    ecdysis = np.stack([ECDYSIS, ECDYSIS + [1.0, 0.5, 2.0, 0.0, 1.0]])
+    x = np.tile(_x_of_hours(HOURS), (2, 1))
+    y = np.tile(_y_of_hours(HOURS), (2, 1))
+    percentages = np.arange(41) / 40
+    # reordered and duplicated after rounding to 6 decimals
+    requested = np.concatenate([percentages[::-1], [0.3750000001]])
+    table = pmod.build_proportion_table(
+        [_series_condition(x, y, ecdysis)], "x", "y", [0], percentages=requested
+    )
+    assert table.attrs["percentages"] == percentages.tolist()
+    for worm, (_, rows) in enumerate(table.groupby("worm_id", sort=True)):
+        assert rows["timepoint"].tolist() == percentages.tolist()
+        hours = _hours_of_percentage(percentages, ecdysis[worm])
+        np.testing.assert_allclose(rows["log_x"], np.log(_x_of_hours(hours)), atol=1e-6)
+        np.testing.assert_allclose(rows["log_y"], np.log(_y_of_hours(hours)), atol=1e-3)
+    by_timepoint = table.drop_duplicates("timepoint").set_index("timepoint_label")
+    assert by_timepoint.loc[["10%", "M1", "37.5%", "M4"], "molt"].tolist() == [
+        1,
+        1,
+        2,
+        4,
+    ]
+    assert table.attrs["sampling"] == "percentages"
+    assert table.attrs["remove_hatch"] is None
+    assert (table.attrs["column_x"], table.attrs["column_y"]) == ("x", "y")
+    assert [table.attrs[k] for k in ("lmbda", "medfilt_window", "bspline_order")] == [
+        0.0075,
+        5,
+        3,
+    ]
+
+
+@pytest.mark.parametrize("experiment_time", [True, False], ids=["hours", "frames"])
+def test_molt_percentages_equal_recomputed_values_at_molt(rng, experiment_time):
+    n_worms = 5
+    ecdysis = ECDYSIS + rng.normal(0, 0.5, (n_worms, 5))
+    noise = rng.normal(0, 0.03, (2, n_worms, len(HOURS)))
+    qc = np.full((n_worms, len(HOURS)), "worm")
+    qc[:, ::17] = "error"
+    condition = _series_condition(
+        _x_of_hours(HOURS) * np.exp(noise[0]),
+        _y_of_hours(HOURS) * np.exp(noise[1]),
+        ecdysis,
+        qc,
+    )
+    if not experiment_time:
+        condition["experiment_time_hours"] = np.full_like(qc, np.nan, dtype=float)
+    table = pmod.build_proportion_table(
+        [condition], "x", "y", [0], percentages=[0.25, 0.5, 0.75, 1.0]
+    )
+    for column in ("x", "y"):
+        condition[f"{column}_at_ecdysis"] = np.full((n_worms, 5), np.nan)
+        _compute_values_at_molt(condition, column, qc, recompute_values_at_molt=True)
+        sampled = table.pivot(
+            index="worm_id", columns="timepoint", values=f"log_{column}"
+        )
+        np.testing.assert_array_equal(
+            sampled.to_numpy(), np.log(condition[f"{column}_at_ecdysis"][:, 1:])
+        )
+
+
+def test_missing_ecdysis_gives_nan_only_in_the_affected_stages():
+    ecdysis = np.stack([ECDYSIS, ECDYSIS])
+    ecdysis[1, 2] = np.nan
+    x = np.tile(1.0 + 0.1 * HOURS, (2, 1))
+    percentages = [0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9]
+    table = pmod.build_proportion_table(
+        [_series_condition(x, 2 * x, ecdysis)], "x", "y", [0], percentages=percentages
+    )
+    counts = table.attrs["counts"].set_index("timepoint")
+    # molt 2 bounds stages 2 and 3; molt 3 itself needs only its own time
+    assert counts["n_nan"].tolist() == [0, 0, 1, 1, 1, 0, 0]
+    second = table[table["worm_id"] == "c0_E1_p1"]
+    np.testing.assert_allclose(
+        second["log_x"],
+        np.log(1.0 + 0.1 * _hours_of_percentage(np.array([0.1, 0.25, 0.75, 0.9]))),
+        rtol=1e-9,
+    )
+
+
+@pytest.mark.parametrize("percentages", [[0.5, 1.2], [-0.1]])
+def test_percentage_table_rejects_percentages_outside_unit_interval(percentages):
+    x = np.ones((2, len(HOURS)))
+    condition = _series_condition(x, x, ECDYSIS)
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        pmod.build_proportion_table([condition], "x", "y", [0], percentages=percentages)
+
+
+def test_percentage_table_needs_a_qc_column():
+    x = np.ones((2, len(HOURS)))
+    condition = _series_condition(x, x, ECDYSIS)
+    del condition["qc"]
+    with pytest.raises(ValueError, match="QC"):
+        pmod.build_proportion_table([condition], "x", "y", [0], percentages=[0.5])
+
+
+def test_ecdysis_table_adds_timepoints_and_keeps_its_columns(simulated_proportions):
+    table = pmod.build_proportion_table(simulated_proportions, *COLUMNS, [0, 1])
+    assert list(table.columns) == [
+        "condition_id",
+        "worm_id",
+        "experiment",
+        "molt",
+        "log_x",
+        "log_y",
+        "timepoint",
+        "timepoint_label",
+    ]
+    np.testing.assert_array_equal(table["timepoint"], table["molt"] / 4)
+    assert set(table["timepoint_label"]) == {"M1", "M2", "M3", "M4"}
+    assert table.attrs["sampling"] == "ecdysis"
+    assert table.attrs["percentages"] is None
+    assert table.attrs["remove_hatch"] is True
+    assert table.attrs["lmbda"] is None
+    counts = table.attrs["counts"]
+    assert list(counts.columns[:6]) == [
+        "condition_id",
+        "molt",
+        "n_worms",
+        "n_nan",
+        "n_non_positive",
+        "n_kept",
+    ]
+
+
+def test_resolve_timepoint_accepts_molts_values_and_labels():
+    coding = pmod.build_genotype_coding([0], reference_condition=0)
+    ecdysis = _result(
+        _reference_table({1: [1.0, 1.1], 2: [2.0, 2.1]}), coding, {"a": ((), [1.0])}, 0
+    )
+    assert ecdysis.resolve_timepoint(2) == 0.5
+    assert ecdysis.resolve_timepoint(np.int64(2)) == 0.5
+    assert ecdysis.resolve_timepoint("M2") == 0.5
+    assert ecdysis.resolve_timepoint(0.25) == 0.25
+    with pytest.raises(ValueError, match="not in the table"):
+        ecdysis.resolve_timepoint(3)
+
+    table = _reference_table({1: [1.0, 1.1], 2: [2.0, 2.1]})
+    table["timepoint"] = table["molt"].map({1: 0.25, 2: 0.375})
+    table["timepoint_label"] = table["molt"].map({1: "M1", 2: "37.5%"})
+    table.attrs["sampling"] = "percentages"
+    percentages = _result(table, coding, {"a": ((), [1.0])}, 0)
+    assert percentages.resolve_timepoint("37.5%") == 0.375
+    assert percentages.resolve_timepoint(0.375) == 0.375
+    assert percentages.resolve_timepoint("M1") == 0.25
+    assert percentages.resolve_timepoint("25%") == 0.25
+    # an int is a molt with percentages too: molt 1 is 25%, molt 2 (50%) is absent
+    assert percentages.resolve_timepoint(1) == 0.25
+    with pytest.raises(ValueError, match="not in the table"):
+        percentages.resolve_timepoint(2)
+
+
+def test_percentage_results_pickled_with_percent_labels_relabel_molts():
+    coding = pmod.build_genotype_coding([0], reference_condition=0)
+    table = _reference_table({1: [1.0, 1.1], 2: [2.0, 2.1]})
+    table["timepoint"] = table["molt"].map({1: 0.125, 2: 0.25})
+    table["timepoint_label"] = table["molt"].map({1: "12.5%", 2: "25%"})
+    table.attrs["sampling"] = "percentages"
+    result = pickle.loads(pickle.dumps(_result(table, coding, {"a": ((), [1.0])}, 0)))
+    assert result.timepoints()["timepoint_label"].tolist() == ["12.5%", "M1"]
+    assert result.table.attrs["sampling"] == "percentages"
+
+
+def test_results_pickled_before_timepoints_and_provenance_load():
+    coding = pmod.build_genotype_coding([0], reference_condition=0)
+    table = _reference_table({1: [1.0, 1.1], 2: [2.0, 2.1]})
+    result = _result(table, coding, {"a": ((), [1.0]), "b": ((), [0.5])}, 0.0)
+    result.linear_misfit = result.reference_residuals_by_molt()
+    # strip what older versions did not have
+    del result.__dict__["provenance"]
+    result.table = result.table.drop(columns=["timepoint", "timepoint_label"])
+    result.linear_misfit = result.linear_misfit.drop(
+        columns=["timepoint", "timepoint_label"]
+    )
+
+    loaded = pickle.loads(pickle.dumps(result))
+    assert loaded.provenance is None
+    assert loaded.sampling == "ecdysis"
+    assert loaded.linear_misfit["timepoint_label"].tolist() == ["M1", "M2"]
+    pd.testing.assert_frame_equal(
+        loaded.reference_residuals_by_timepoint(),
+        loaded.reference_residuals_by_molt(),
+    )
+    assert loaded.reference_residuals_by_molt()["molt"].tolist() == [1, 2]
+
+
+@pytest.fixture(scope="module")
+def percentage_fit():
+    return fit_series_proportions(), list(FIT_PERCENTAGES)
+
+
+@pytest.mark.slow
+def test_percentage_fit_recovers_the_offset(percentage_fit):
+    result, _ = percentage_fit
+    beta = result.summary().set_index("parameter").loc["beta[condition[1]]"]
+    assert beta["lower"] < SERIES_CELLS[1]["beta"] < beta["upper"]
+    assert result.provenance["sampling"] == "percentages"
+    assert result.provenance["percentages"] == [
+        0.1,
+        0.2,
+        0.25,
+        0.4,
+        0.6,
+        0.75,
+        0.9,
+        1.0,
+    ]
+
+
+@pytest.mark.slow
+def test_percentage_fit_reports_one_group_per_timepoint(percentage_fit):
+    result, percentages = percentage_fit
+    labels = ["10%", "20%", "M1", "40%", "60%", "M3", "90%", "M4"]
+    assert result.timepoints()["timepoint_label"].tolist() == labels
+    assert result.timepoints()["molt"].tolist() == [1, 1, 1, 2, 3, 3, 4, 4]
+
+    misfit = result.reference_residuals_by_timepoint()
+    assert misfit["timepoint"].tolist() == percentages
+    assert result.linear_misfit["timepoint_label"].tolist() == labels
+
+    positions = result.timepoint_positions()
+    for _, cell in positions.groupby("cell"):
+        assert cell["timepoint"].tolist() == percentages
+
+    tests = result.timepoint_dispersion_tests()
+    assert tests["timepoint_label"].tolist() == labels
+    assert (tests["family_size"] == len(percentages)).all()
+
+    deviations = result.worm_deviations()
+    assert list(deviations.columns[3:]) == labels
+
+    replicated, observed = result.posterior_predictive_residuals(n_draws=5)
+    assert sorted(replicated["timepoint"].unique()) == percentages
+    assert set(result.support_flags()) <= {"in", "gap", "out"}
