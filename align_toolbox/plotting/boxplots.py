@@ -656,7 +656,6 @@ def _plot_violinplot(
     show_metric: bool = False,
     test: str | list[str] = "Mann-Whitney",
     show_swarm: bool = True,
-    hide_outliers: bool = False,
     inner: str | None = "box",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
     custom_annotations: dict[int, tuple[list[tuple], list[str]]] | None = None,
@@ -684,11 +683,9 @@ def _plot_violinplot(
             several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the violin plot.
             Defaults to ``True``.
-        hide_outliers (bool) : If ``True``, remove data points beyond ±3 std in the
-            swarm plot (violin retains them).  Defaults to ``False``.
         inner (str or None) : Passed to seaborn violinplot ``inner`` parameter. Defaults to ``None``.
         display_transform (Callable or None) : Applied to the values only when
-            drawing them; tests, outlier detection and metrics use the original
+            drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
         custom_annotations (dict or None) : Precomputed brackets per ``"Order"``
             value, as ``(pairs, texts)``.  When given, these are drawn instead of
@@ -737,23 +734,10 @@ def _plot_violinplot(
             linecolor="black",
         )
 
-        plot_df = shown_df.copy()
-        if hide_outliers:
-            data = df[df["Order"] == event_index]
-            for condition in conditions_to_plot:
-                condition_data = data[data["Condition"] == condition]
-                mean = condition_data[column].mean()
-                std = condition_data[column].std()
-                outliers = condition_data[
-                    (condition_data[column] < mean - 3 * std)
-                    | (condition_data[column] > mean + 3 * std)
-                ]
-                plot_df.loc[outliers.index, column] = np.nan
-
         if show_swarm:
-            dot_size = _swarm_dot_size(plot_df, event_index, column)
+            dot_size = _swarm_dot_size(shown_df, event_index, column)
             sns.swarmplot(
-                data=plot_df[plot_df["Order"] == event_index],
+                data=shown_df[shown_df["Order"] == event_index],
                 x="Condition",
                 order=conditions_to_plot,
                 y=column,
@@ -824,7 +808,6 @@ def _plot_boxplot(
     log_scale: bool,
     show_metric: bool = False,
     show_swarm: bool = True,
-    hide_outliers: bool = False,
     test: str | list[str] = "Mann-Whitney",
     return_data: bool = False,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
@@ -850,13 +833,11 @@ def _plot_boxplot(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the box plot.
             Defaults to ``True``.
-        hide_outliers (bool) : If ``True``, remove data points beyond ±3 std in the
-            swarm plot.  Defaults to ``False``.
         test (str or list[str]) : Statistical test for significance annotation, or
             several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
         return_data (bool) : Unused; reserved for future use.  Defaults to ``False``.
         display_transform (Callable or None) : Applied to the values only when
-            drawing them; tests, outlier detection and metrics use the original
+            drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
         holm_correction (str or None) : Holm family passed to
             ``_compute_significance_annotations``; ``None`` shows the raw p-values.
@@ -901,26 +882,13 @@ def _plot_boxplot(
             linecolor="black",
         )
 
-        plot_df = shown_df.copy()
-        if hide_outliers:
-            data = df[df["Order"] == event_index]
-            for condition in conditions_to_plot:
-                condition_data = data[data["Condition"] == condition]
-                mean = condition_data[column].mean()
-                std = condition_data[column].std()
-                outliers = condition_data[
-                    (condition_data[column] < mean - 3 * std)
-                    | (condition_data[column] > mean + 3 * std)
-                ]
-                plot_df.loc[outliers.index, column] = np.nan
-
         if log_scale:
             current_ax.set_yscale("log")
 
         if show_swarm:
-            dot_size = _swarm_dot_size(plot_df, event_index, column)
+            dot_size = _swarm_dot_size(shown_df, event_index, column)
             sns.swarmplot(
-                data=plot_df[plot_df["Order"] == event_index],
+                data=shown_df[shown_df["Order"] == event_index],
                 x="Condition",
                 order=conditions_to_plot,
                 y=column,
@@ -987,7 +955,6 @@ def _plot_swarmplot(
     significance_pairs: list[tuple] | None,
     log_scale: bool,
     show_metric: bool = False,
-    hide_outliers: bool = False,
     test: str | list[str] = "Mann-Whitney",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
     holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
@@ -1011,12 +978,10 @@ def _plot_swarmplot(
             ``_add_metric_text``.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
             Defaults to ``False``.
-        hide_outliers (bool) : If ``True``, remove data points beyond ±3 std from the
-            swarm; tests and metrics still use them.  Defaults to ``False``.
         test (str or list[str]) : Statistical test for significance annotation, or
             several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
         display_transform (Callable or None) : Applied to the values only when
-            drawing them; tests, outlier detection and metrics use the original
+            drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
         holm_correction (str or None) : Holm family passed to
             ``_compute_significance_annotations``; ``None`` shows the raw p-values.
@@ -1045,25 +1010,12 @@ def _plot_swarmplot(
         else:
             current_ax = ax
 
-        plot_df = shown_df.copy()
-        if hide_outliers:
-            data = df[df["Order"] == event_index]
-            for condition in conditions_to_plot:
-                condition_data = data[data["Condition"] == condition]
-                mean = condition_data[column].mean()
-                std = condition_data[column].std()
-                outliers = condition_data[
-                    (condition_data[column] < mean - 3 * std)
-                    | (condition_data[column] > mean + 3 * std)
-                ]
-                plot_df.loc[outliers.index, column] = np.nan
-
         # swarm layout is computed in display space, so the scale must be set first
         if log_scale:
             current_ax.set_yscale("log")
 
         swarmplot = sns.swarmplot(
-            data=plot_df[plot_df["Order"] == event_index],
+            data=shown_df[shown_df["Order"] == event_index],
             x="Condition",
             y=column,
             order=conditions_to_plot,
@@ -1072,7 +1024,7 @@ def _plot_swarmplot(
             palette=color_palette,
             ax=current_ax,
             dodge=False,
-            size=_swarm_dot_size(plot_df, event_index, column),
+            size=_swarm_dot_size(shown_df, event_index, column),
             edgecolor="black",
             linewidth=0.5,
             legend="full",
@@ -1142,6 +1094,179 @@ def _swarm_dot_size(df: pd.DataFrame, event_index: int, column: str) -> float:
     )
     n_max = max(20, int(n_max))
     return max(3.0, 6.0 * (20.0 / n_max) ** 0.5)
+
+
+def _worm_identity(condition_dict: dict, worm: int) -> dict:
+    """
+    Look up the point and filemap a worm of a condition comes from.
+
+    Parameters:
+        condition_dict (dict): Condition dict, optionally holding ``"point"`` and
+            ``"filemap_path"`` arrays of shape ``(n_worms, 1)``.
+        worm (int): Row index of the worm in the condition's arrays.
+
+    Returns:
+        dict: ``{"Point": ..., "Filemap": ...}``, with ``None`` for missing keys.
+    """
+    identity = {}
+    for name, key in (("Point", "point"), ("Filemap", "filemap_path")):
+        values = condition_dict.get(key)
+        identity[name] = None if values is None else values[worm, 0]
+    return identity
+
+
+def _build_event_dataframe(
+    conditions_struct: list,
+    column: str,
+    conditions_to_plot: list,
+    events_to_plot: list[int] | None,
+) -> pd.DataFrame:
+    """
+    Gather one row per worm and event of a per-molt measurement.
+
+    Parameters:
+        conditions_struct (list): List of condition dicts.
+        column (str): Key of the per-molt measurement array
+            (shape ``(n_worms, n_molts)``).
+        conditions_to_plot (list): Ordered condition identifiers.
+        events_to_plot (list[int] or None): Column indices (molt events) to include;
+            all events of the first condition when ``None``.
+
+    Returns:
+        pandas.DataFrame: Columns ``"Condition"``, ``"Order"`` (panel index),
+        ``"Event"``, ``"Description"``, ``"Point"``, ``"Filemap"`` and ``column``.
+    """
+    data_list = []
+    for condition_id in conditions_to_plot:
+        condition_dict = conditions_struct[condition_id]
+        data = condition_dict[column]
+        if not events_to_plot:
+            events_to_plot = range(data.shape[1])
+
+        for order, event in enumerate(events_to_plot):
+            for worm, value in enumerate(data[:, event]):
+                data_list.append(
+                    {
+                        "Condition": condition_id,
+                        "Order": order,
+                        "Event": event,
+                        "Description": condition_dict["description"],
+                        **_worm_identity(condition_dict, worm),
+                        column: value,
+                    }
+                )
+    return pd.DataFrame(data_list)
+
+
+def _build_larval_stage_dataframe(
+    conditions_struct: list,
+    column: str,
+    conditions_to_plot: list,
+    aggregation: str,
+    fraction: tuple[float, float],
+) -> pd.DataFrame:
+    """
+    Gather one row per worm and larval stage, aggregating a rescaled series.
+
+    Parameters:
+        conditions_struct (list): List of condition dicts.
+        column (str): Key of the rescaled series (shape ``(n_worms, n_stages, n_points)``).
+        conditions_to_plot (list): Ordered condition identifiers.
+        aggregation (str): ``"mean"`` or ``"median"`` over the stage fraction.
+        fraction (tuple[float, float]): Start and end fractions of each stage to
+            aggregate.
+
+    Returns:
+        pandas.DataFrame: Columns ``"Condition"``, ``"Order"`` and ``"Event"`` (both
+        the stage index), ``"Point"``, ``"Filemap"`` and ``column``.
+    """
+    data_list = []
+    for condition_id in conditions_to_plot:
+        condition_dict = conditions_struct[condition_id]
+        data = condition_dict[column]
+        for i in range(data.shape[1]):
+            data_of_stage = data[:, i]
+            data_of_stage = data_of_stage[
+                :,
+                int(fraction[0] * data_of_stage.shape[1]) : int(
+                    fraction[1] * data_of_stage.shape[1]
+                ),
+            ]
+
+            if aggregation == "mean":
+                aggregated_data_of_stage = np.nanmean(data_of_stage, axis=1)
+            elif aggregation == "median":
+                aggregated_data_of_stage = np.nanmedian(data_of_stage, axis=1)
+
+            for j in range(aggregated_data_of_stage.shape[0]):
+                data_list.append(
+                    {
+                        "Condition": condition_id,
+                        "Order": i,
+                        "Event": i,
+                        **_worm_identity(condition_dict, j),
+                        column: aggregated_data_of_stage[j],
+                    }
+                )
+    return pd.DataFrame(data_list)
+
+
+def _z_scores(df: pd.DataFrame, column: str) -> pd.Series:
+    """
+    Compute each value's distance from its population mean, in standard deviations.
+
+    A population is one condition in one panel (one ``"Order"`` value).
+
+    Parameters:
+        df (pandas.DataFrame): Data with ``"Order"``, ``"Condition"`` and ``column``.
+        column (str): Column holding the values.
+
+    Returns:
+        pandas.Series: Signed z-scores aligned with ``df``; NaN for NaN values.
+    """
+    groups = df.groupby(["Order", "Condition"])[column]
+    return (df[column] - groups.transform("mean")) / groups.transform("std")
+
+
+def _report_outliers(
+    df: pd.DataFrame,
+    column: str,
+    conditions_struct: list,
+    n_std: float,
+) -> None:
+    """
+    Print the points beyond ``n_std`` std of their population, grouped by filemap.
+
+    A population is one condition in one panel.
+
+    Parameters:
+        df (pandas.DataFrame): Data with ``"Order"``, ``"Event"``, ``"Condition"``,
+            ``"Point"``, ``"Filemap"`` and ``column`` columns.
+        column (str): Column holding the values.
+        conditions_struct (list): List of condition dicts, for the descriptions.
+        n_std (float): Distance from the population mean, in standard deviations,
+            beyond which a point is reported.
+
+    Returns:
+        None
+    """
+    z_scores = _z_scores(df, column)
+    outliers = df.loc[z_scores.abs() > n_std].assign(z=z_scores)
+    print(f"\nPoints more than {n_std:g} std from their condition mean in '{column}':")
+    if outliers.empty:
+        print("  none")
+        return
+
+    filemaps = outliers["Filemap"].fillna("unknown filemap")
+    for filemap, group in outliers.groupby(filemaps, sort=True):
+        print(f"\n{filemap}")
+        for _, row in group.sort_values(["Point", "Event"]).iterrows():
+            description = conditions_struct[row["Condition"]].get("description", "")
+            print(
+                f"  Point {row['Point']}: condition {row['Condition']} "
+                f"({description}), event {row['Event']}, "
+                f"value {row[column]:.4g}, z = {row['z']:+.2f}"
+            )
 
 
 def _set_all_y_limits(ax: np.ndarray, y_min: list[float], y_max: list[float]) -> None:
@@ -1245,10 +1370,11 @@ def violinplot(
     titles: list[str] | None = None,
     share_y_axis: bool = False,
     show_swarm: bool = True,
-    hide_outliers: bool = True,
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    report_outliers: bool = False,
+    outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> matplotlib.figure.Figure:
     """
@@ -1296,8 +1422,6 @@ def violinplot(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the violin plot.
             Defaults to ``True``.
-        hide_outliers (bool) : If ``True``, hide swarm-plot points beyond ±3 std.
-            Defaults to ``True``.
         return_data (bool) : If ``True``, also return the intermediate DataFrame.
             Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
@@ -1305,9 +1429,16 @@ def violinplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        report_outliers (bool) : If ``True``, print every point lying more than
+            ``outlier_threshold`` std from the mean of its condition in its panel,
+            with its point and value, grouped by the filemap it comes from.
+            Defaults to ``False``.
+        outlier_threshold (float) : Distance from the population mean, in standard
+            deviations, beyond which ``report_outliers`` prints a point.
+            Defaults to ``2.0``.
         display_transform (Callable or None) : Function applied to the values only
             when drawing them, e.g. ``proportions.log_ratio_to_percentage`` to show
-            log-ratio deviations as percents.  Significance tests, outlier hiding
+            log-ratio deviations as percents.  Significance tests, outlier reports
             and spread metrics use the untransformed values; mean and median
             metrics are computed on them and then transformed.
             Defaults to ``None``.
@@ -1323,27 +1454,11 @@ def violinplot(
         colors,
     )
 
-    # Prepare data
-    data_list = []
-    for condition_id in conditions_to_plot:
-        condition_dict = conditions_struct[condition_id]
-        data = condition_dict[column]
-        if not events_to_plot:
-            events_to_plot = range(conditions_struct[condition_id][column].shape[1])
-
-        for idx, j in enumerate(events_to_plot):
-            for value in data[:, j]:
-                order = idx
-                data_list.append(
-                    {
-                        "Condition": condition_id,
-                        "Order": order,
-                        "Description": condition_dict["description"],
-                        column: value,
-                    }
-                )
-
-    df = pd.DataFrame(data_list)
+    df = _build_event_dataframe(
+        conditions_struct, column, conditions_to_plot, events_to_plot
+    )
+    if report_outliers:
+        _report_outliers(df, column, conditions_struct, outlier_threshold)
 
     fig, ax = _setup_figure(
         df,
@@ -1365,7 +1480,6 @@ def violinplot(
         log_scale=log_scale,
         show_metric=show_metric,
         show_swarm=show_swarm,
-        hide_outliers=hide_outliers,
         test=significance_test,
         holm_correction=holm_correction,
         display_transform=display_transform,
@@ -1418,10 +1532,11 @@ def boxplot(
     titles: list[str] | None = None,
     share_y_axis: bool = False,
     show_swarm: bool = True,
-    hide_outliers: bool = True,
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    report_outliers: bool = False,
+    outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> matplotlib.figure.Figure:
     """
@@ -1471,8 +1586,6 @@ def boxplot(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the box plot.
             Defaults to ``True``.
-        hide_outliers (bool) : If ``True``, hide swarm-plot points beyond ±3 std.
-            Defaults to ``True``.
         return_data (bool) : If ``True``, also return the intermediate DataFrame.
             Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
@@ -1480,9 +1593,16 @@ def boxplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        report_outliers (bool) : If ``True``, print every point lying more than
+            ``outlier_threshold`` std from the mean of its condition in its panel,
+            with its point and value, grouped by the filemap it comes from.
+            Defaults to ``False``.
+        outlier_threshold (float) : Distance from the population mean, in standard
+            deviations, beyond which ``report_outliers`` prints a point.
+            Defaults to ``2.0``.
         display_transform (Callable or None) : Function applied to the values only
             when drawing them, e.g. ``proportions.log_ratio_to_percentage`` to show
-            log-ratio deviations as percents.  Significance tests, outlier hiding
+            log-ratio deviations as percents.  Significance tests, outlier reports
             and spread metrics use the untransformed values; mean and median
             metrics are computed on them and then transformed.
             Defaults to ``None``.
@@ -1498,28 +1618,11 @@ def boxplot(
         colors,
     )
 
-    # Prepare data
-    data_list = []
-    for condition_id in conditions_to_plot:
-        condition_dict = conditions_struct[condition_id]
-        data = condition_dict[column]
-        if not events_to_plot:
-            events_to_plot = range(conditions_struct[condition_id][column].shape[1])
-
-        for idx, j in enumerate(events_to_plot):
-            for value in data[:, j]:
-                order = idx
-                data_list.append(
-                    {
-                        "Condition": condition_id,
-                        "Order": order,
-                        "Description": condition_dict["description"],
-                        # column: np.log10(value) if log_scale else value,
-                        column: value,
-                    }
-                )
-
-    df = pd.DataFrame(data_list)
+    df = _build_event_dataframe(
+        conditions_struct, column, conditions_to_plot, events_to_plot
+    )
+    if report_outliers:
+        _report_outliers(df, column, conditions_struct, outlier_threshold)
 
     fig, ax = _setup_figure(
         df,
@@ -1539,7 +1642,6 @@ def boxplot(
         plot_significance,
         significance_pairs,
         show_swarm=show_swarm,
-        hide_outliers=hide_outliers,
         log_scale=log_scale,
         show_metric=show_metric,
         test=significance_test,
@@ -1593,10 +1695,11 @@ def swarmplot(
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
     share_y_axis: bool = False,
-    hide_outliers: bool = False,
     return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    report_outliers: bool = False,
+    outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> matplotlib.figure.Figure:
     """
@@ -1643,9 +1746,6 @@ def swarmplot(
         titles (list[str] or None) : Subplot titles.  Defaults to ``None``.
         share_y_axis (bool) : If ``True``, synchronise y-axis limits.
             Defaults to ``False``.
-        hide_outliers (bool) : If ``True``, hide points beyond ±3 std.  Unlike box and
-            violin plots, the swarm is the only element drawn, so this is off by
-            default.  Defaults to ``False``.
         return_data (bool) : If ``True``, also return the intermediate DataFrame.
             Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
@@ -1653,9 +1753,16 @@ def swarmplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             swarm with its legend text on the x axis; ``legend_placement`` is
             ignored.  Defaults to ``False``.
+        report_outliers (bool) : If ``True``, print every point lying more than
+            ``outlier_threshold`` std from the mean of its condition in its panel,
+            with its point and value, grouped by the filemap it comes from.
+            Defaults to ``False``.
+        outlier_threshold (float) : Distance from the population mean, in standard
+            deviations, beyond which ``report_outliers`` prints a point.
+            Defaults to ``2.0``.
         display_transform (Callable or None) : Function applied to the values only
             when drawing them, e.g. ``proportions.log_ratio_to_percentage`` to show
-            log-ratio deviations as percents.  Significance tests, outlier hiding
+            log-ratio deviations as percents.  Significance tests, outlier reports
             and spread metrics use the untransformed values; mean and median
             metrics are computed on them and then transformed.
             Defaults to ``None``.
@@ -1671,26 +1778,11 @@ def swarmplot(
         colors,
     )
 
-    # Prepare data
-    data_list = []
-    for condition_id in conditions_to_plot:
-        condition_dict = conditions_struct[condition_id]
-        data = condition_dict[column]
-        if not events_to_plot:
-            events_to_plot = range(conditions_struct[condition_id][column].shape[1])
-
-        for idx, j in enumerate(events_to_plot):
-            for value in data[:, j]:
-                data_list.append(
-                    {
-                        "Condition": condition_id,
-                        "Order": idx,
-                        "Description": condition_dict["description"],
-                        column: value,
-                    }
-                )
-
-    df = pd.DataFrame(data_list)
+    df = _build_event_dataframe(
+        conditions_struct, column, conditions_to_plot, events_to_plot
+    )
+    if report_outliers:
+        _report_outliers(df, column, conditions_struct, outlier_threshold)
 
     fig, ax = _setup_figure(
         df,
@@ -1711,7 +1803,6 @@ def swarmplot(
         significance_pairs,
         log_scale=log_scale,
         show_metric=show_metric,
-        hide_outliers=hide_outliers,
         test=significance_test,
         holm_correction=holm_correction,
         display_transform=display_transform,
@@ -1765,9 +1856,10 @@ def violinplot_larval_stage(
     share_y_axis: bool = False,
     show_metric: bool = False,
     show_swarm: bool = True,
-    hide_outliers: bool = True,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    report_outliers: bool = False,
+    outlier_threshold: float = 2.0,
 ) -> matplotlib.figure.Figure:
     """
     Create violin plots with per-worm values aggregated within a fraction of each larval stage.
@@ -1820,13 +1912,18 @@ def violinplot_larval_stage(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the violin plot.
             Defaults to ``True``.
-        hide_outliers (bool) : If ``True``, hide swarm-plot points beyond ±3 std.
-            Defaults to ``True``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        report_outliers (bool) : If ``True``, print every point lying more than
+            ``outlier_threshold`` std from the mean of its condition in its panel,
+            with its point and value, grouped by the filemap it comes from.
+            Defaults to ``False``.
+        outlier_threshold (float) : Distance from the population mean, in standard
+            deviations, beyond which ``report_outliers`` prints a point.
+            Defaults to ``2.0``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -1843,35 +1940,11 @@ def violinplot_larval_stage(
         )
         column = rescaled_column
 
-    # Prepare data
-    data_list = []
-    for condition_id in conditions_to_plot:
-        condition_dict = conditions_struct[condition_id]
-        data = condition_dict[column]
-        for i in range(data.shape[1]):
-            data_of_stage = data[:, i]
-            data_of_stage = data_of_stage[
-                :,
-                int(fraction[0] * data_of_stage.shape[1]) : int(
-                    fraction[1] * data_of_stage.shape[1]
-                ),
-            ]
-
-            if aggregation == "mean":
-                aggregated_data_of_stage = np.nanmean(data_of_stage, axis=1)
-            elif aggregation == "median":
-                aggregated_data_of_stage = np.nanmedian(data_of_stage, axis=1)
-
-            for j in range(aggregated_data_of_stage.shape[0]):
-                data_list.append(
-                    {
-                        "Condition": condition_id,
-                        "Order": i,
-                        column: aggregated_data_of_stage[j],
-                    }
-                )
-
-    df = pd.DataFrame(data_list)
+    df = _build_larval_stage_dataframe(
+        conditions_struct, column, conditions_to_plot, aggregation, fraction
+    )
+    if report_outliers:
+        _report_outliers(df, column, conditions_struct, outlier_threshold)
 
     fig, ax = _setup_figure(
         df,
@@ -1893,7 +1966,6 @@ def violinplot_larval_stage(
         log_scale=log_scale,
         show_metric=show_metric,
         show_swarm=show_swarm,
-        hide_outliers=hide_outliers,
         test=significance_test,
         holm_correction=holm_correction,
     )
@@ -1940,9 +2012,10 @@ def boxplot_larval_stage(
     share_y_axis: bool = False,
     show_metric: bool = False,
     show_swarm: bool = True,
-    hide_outliers: bool = True,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    report_outliers: bool = False,
+    outlier_threshold: float = 2.0,
 ) -> matplotlib.figure.Figure:
     """
     Create box plots with per-worm values aggregated within a fraction of each larval stage.
@@ -1994,13 +2067,18 @@ def boxplot_larval_stage(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the box plot.
             Defaults to ``True``.
-        hide_outliers (bool) : If ``True``, hide swarm-plot points beyond ±3 std.
-            Defaults to ``True``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        report_outliers (bool) : If ``True``, print every point lying more than
+            ``outlier_threshold`` std from the mean of its condition in its panel,
+            with its point and value, grouped by the filemap it comes from.
+            Defaults to ``False``.
+        outlier_threshold (float) : Distance from the population mean, in standard
+            deviations, beyond which ``report_outliers`` prints a point.
+            Defaults to ``2.0``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
@@ -2017,35 +2095,11 @@ def boxplot_larval_stage(
         )
         column = rescaled_column
 
-    # Prepare data
-    data_list = []
-    for condition_id in conditions_to_plot:
-        condition_dict = conditions_struct[condition_id]
-        data = condition_dict[column]
-        for i in range(data.shape[1]):
-            data_of_stage = data[:, i]
-            data_of_stage = data_of_stage[
-                :,
-                int(fraction[0] * data_of_stage.shape[1]) : int(
-                    fraction[1] * data_of_stage.shape[1]
-                ),
-            ]
-
-            if aggregation == "mean":
-                aggregated_data_of_stage = np.nanmean(data_of_stage, axis=1)
-            elif aggregation == "median":
-                aggregated_data_of_stage = np.nanmedian(data_of_stage, axis=1)
-
-            for j in range(aggregated_data_of_stage.shape[0]):
-                data_list.append(
-                    {
-                        "Condition": condition_id,
-                        "Order": i,
-                        column: aggregated_data_of_stage[j],
-                    }
-                )
-
-    df = pd.DataFrame(data_list)
+    df = _build_larval_stage_dataframe(
+        conditions_struct, column, conditions_to_plot, aggregation, fraction
+    )
+    if report_outliers:
+        _report_outliers(df, column, conditions_struct, outlier_threshold)
 
     fig, ax = _setup_figure(
         df,
@@ -2067,7 +2121,6 @@ def boxplot_larval_stage(
         log_scale=log_scale,
         show_metric=show_metric,
         show_swarm=show_swarm,
-        hide_outliers=hide_outliers,
         test=significance_test,
         holm_correction=holm_correction,
     )

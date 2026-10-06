@@ -222,7 +222,6 @@ def test_display_transform_changes_drawn_values_not_tests(
         log_scale=False,
         plot_significance=True,
         significance_test="Levene",
-        hide_outliers=False,
         return_data=True,
     )
     raw_fig, _ = plot_function(conditions_struct, "log_dev", [0, 1], **kwargs)
@@ -272,7 +271,6 @@ def test_several_tests_share_one_bracket(conditions_struct, plot_function):
         plot_significance=True,
         significance_test=["Mann-Whitney", "Levene"],
         show_metric=True,
-        hide_outliers=False,
     )
 
     texts = [t.get_text() for t in fig.axes[0].texts]
@@ -340,7 +338,6 @@ def test_holm_correction_adjusts_shown_p_values_within_family(plot_function, fam
         plot_significance=True,
         significance_test="Levene",
         holm_correction=family,
-        hide_outliers=False,
         legend={"description": ""},
     )
     for ax, expected_panel in zip(fig.axes, expected, strict=True):
@@ -376,3 +373,48 @@ def test_swarmplot_draws_every_worm_in_its_condition_color(conditions_struct):
             np.sort(condition["body_seg_volume_at_ecdysis"][:, 2]),
         )
         np.testing.assert_allclose(swarm.get_facecolors()[:, :3], [to_rgb(color)] * 30)
+
+
+@pytest.fixture
+def outlier_struct(conditions_struct):
+    """
+    Condition 0 worms come from two filemaps (worms 0-14, then 15-29) and are all
+    1 except worms 3 and 20 at event 0 (z = 3.68) and worm 7 at event 1 (z = 5.30).
+    Condition 1 has no spread, so no z-score.
+    """
+    for condition in conditions_struct:
+        condition["custom"] = np.ones((30, 2))
+    conditions_struct[0]["custom"][[3, 20], 0] = 100
+    conditions_struct[0]["custom"][7, 1] = 100
+    conditions_struct[0]["filemap_path"] = np.array([["a.csv"]] * 15 + [["b.csv"]] * 15)
+    return conditions_struct
+
+
+@pytest.mark.parametrize(
+    "threshold, expected",
+    [
+        (2.0, {"a.csv": ["Point 3", "Point 7"], "b.csv": ["Point 20"]}),
+        (4.0, {"a.csv": ["Point 7"]}),
+    ],
+)
+def test_report_outliers_groups_points_by_filemap(
+    outlier_struct, capsys, threshold, expected
+):
+    boxplots.boxplot(
+        outlier_struct,
+        "custom",
+        [0, 1],
+        log_scale=False,
+        report_outliers=True,
+        outlier_threshold=threshold,
+    )
+    lines = capsys.readouterr().out.splitlines()
+    report = lines[lines.index(next(line for line in lines if "std from" in line)) :]
+    reported = {}
+    for line in report[1:]:
+        if line.endswith(".csv"):
+            filemap = line
+            reported[filemap] = []
+        elif line.startswith("  Point"):
+            reported[filemap].append(line.split(":")[0].strip())
+    assert reported == expected
