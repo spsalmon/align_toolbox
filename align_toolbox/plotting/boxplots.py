@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from itertools import combinations
+from typing import Literal
 
 import bottleneck as bn
 import matplotlib.axes
@@ -13,6 +14,7 @@ from statannotations.Annotator import Annotator
 from statannotations.format_annotations import pval_annotation_text, simple_text
 from statannotations.stats.StatResult import StatResult
 from statannotations.stats.StatTest import STATTEST_LIBRARY, StatTest
+from statsmodels.stats.multitest import multipletests
 
 from .utils_data_processing import rescale_without_flattening
 from .utils_plotting import (
@@ -23,7 +25,8 @@ from .utils_plotting import (
 )
 
 STATANNOTATIONS_TESTS = STATTEST_LIBRARY.keys()
-CUSTOM_TESTS = ["Feltz-Miller", "MSLR"]
+CUSTOM_TESTS = ["Feltz-Miller", "MSLR", "Brown-Forsythe"]
+HOLM_FAMILIES = ["panel", "pair", "figure"]
 
 
 def _setup_figure(
@@ -213,13 +216,33 @@ def mslr_test(
     return statm, pval
 
 
+def brown_forsythe_test(
+    sample1: np.ndarray, sample2: np.ndarray
+) -> tuple[float, float]:
+    """
+    Perform the Brown-Forsythe test for equality of variances on two samples.
+
+    This is Levene's test with deviations taken from each sample's median rather
+    than its mean, which keeps it robust to skewed and heavy-tailed data.
+
+    Parameters:
+        sample1 (array-like) : First sample values.
+        sample2 (array-like) : Second sample values.
+
+    Returns:
+        tuple[float, float] : Test statistic ``W`` and p-value.
+    """
+    result = stats.levene(sample1, sample2, center="median")
+    return result.statistic, result.pvalue
+
+
 def _get_stat_test(test: str) -> StatTest:
     """
     Build the statannotations test for ``test``.
 
     Parameters:
-        test (str): Statannotations built-in test name, ``"Feltz-Miller"`` or
-            ``"MSLR"``.
+        test (str): Statannotations built-in test name, ``"Feltz-Miller"``,
+            ``"MSLR"`` or ``"Brown-Forsythe"``.
 
     Returns:
         StatTest: The test; calling it on two samples returns a ``StatResult``.
@@ -237,6 +260,10 @@ def _get_stat_test(test: str) -> StatTest:
         )
     elif test == "MSLR":
         stat_test = StatTest(mslr_test, "Modified Signed Likelihood Ratio Test", "MSLR")
+    elif test == "Brown-Forsythe":
+        stat_test = StatTest(
+            brown_forsythe_test, "Brown-Forsythe Test", "Brown-Forsythe"
+        )
     else:
         raise ValueError(
             f"Test {test} is not supported. Please use one of the following: "
@@ -271,101 +298,148 @@ def _format_test_result(test: str, result: StatResult) -> str:
     return f"{name} {text}"
 
 
-def _annotate_significance(
+def _compute_significance_annotations(
     df: pd.DataFrame,
     conditions_to_plot: list,
     column: str,
-    boxplot: matplotlib.axes.Axes,
     significance_pairs: list[tuple] | None,
-    event_index: int,
-    plot_type: str = "boxplot",
     test: str | list[str] = "Mann-Whitney",
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     verbose: bool = True,
-    shown_df: pd.DataFrame | None = None,
-    custom_texts: list[str] | None = None,
-) -> None:
+) -> dict[int, tuple[list[tuple], list[str]]]:
     """
-    Add significance annotations to a single subplot using statannotations.
+    Run the significance tests of every subplot and format their bracket texts.
 
-    The tests run on ``df``; the brackets are placed from ``shown_df``, so the
-    plot can display transformed values while the tests use the original ones.
-    With several tests, each bracket carries one line per test, stacked in the
-    order given.  Every line is prefixed with the name of its test.
+    Each test is run on every pair in every subplot.  With ``holm_correction``,
+    the p-values of each test are Holm-adjusted within a family: the pairs of one
+    subplot (``"panel"``), one pair across all subplots (``"pair"``), or every
+    pair of every subplot (``"figure"``).  Tests with a NaN p-value are left out
+    of their family.
 
     Parameters:
         df (pandas.DataFrame) : Full data DataFrame with ``"Order"`` and
             ``"Condition"`` columns.
         conditions_to_plot (list) : Ordered condition identifiers.
         column (str) : Column name of the y-variable.
-        boxplot (matplotlib.axes.Axes) : Axes object of the target subplot.
         significance_pairs (list[tuple] or None) : Explicit pairs to annotate;
             all pairwise combinations are used when ``None``.
-        event_index (int) : The ``"Order"`` value identifying the current subplot.
-        plot_type (str) : ``"boxplot"`` or ``"violinplot"``.  Defaults to ``"boxplot"``.
         test (str or list[str]) : Statistical test name, or several names to share
             each bracket.  Statannotations built-in tests are supported as well as
-            ``"Feltz-Miller"`` and ``"MSLR"``.  Defaults to ``"Mann-Whitney"``.
+            ``"Feltz-Miller"``, ``"MSLR"`` and ``"Brown-Forsythe"``.
+            Defaults to ``"Mann-Whitney"``.
+        holm_correction (str or None) : Holm family, ``"panel"``, ``"pair"`` or
+            ``"figure"``; ``None`` shows the raw p-values.  Defaults to ``"pair"``.
         verbose (bool) : If ``True``, print sample sizes and test details.
             Defaults to ``True``.
-        shown_df (pandas.DataFrame or None) : The values drawn on the axes, with the
-            same layout as ``df``; ``df`` is used when ``None``.
-            Defaults to ``None``.
-        custom_texts (list[str] or None) : Precomputed bracket texts, one per pair of
-            ``significance_pairs``.  When given, no test is run and ``test`` is
-            ignored.  Defaults to ``None``.
+
+    Returns:
+        dict[int, tuple[list[tuple], list[str]]] : ``(pairs, texts)`` keyed by
+            ``"Order"`` value, one text per pair.
 
     Raises:
-        ValueError : If a test is not supported, or if ``custom_texts`` does not
-            have one text per pair of ``significance_pairs``.
+        ValueError : If a test or ``holm_correction`` is not supported.
+    """
+    if holm_correction not in (*HOLM_FAMILIES, None):
+        raise ValueError(
+            f"holm_correction must be one of {HOLM_FAMILIES} or None, "
+            f"got {holm_correction!r}."
+        )
+    tests = [test] if isinstance(test, str) else list(test)
+    stat_tests = [_get_stat_test(name) for name in tests]
+    if significance_pairs is None:
+        pairs = list(combinations(df["Condition"].unique(), 2))
+    else:
+        pairs = list(significance_pairs)
+    panels = range(df["Order"].nunique())
+
+    # keyed by (test index, panel, pair index)
+    results = {}
+    for panel in panels:
+        panel_df = df[df["Order"] == panel]
+        if verbose:
+            print(
+                f"\nSample sizes (non-NaN) for event index {panel}, column '{column}':"
+            )
+            for condition in conditions_to_plot:
+                n = panel_df.loc[panel_df["Condition"] == condition, column].count()
+                print(f"Condition {condition}: n={n}")
+        for k, pair in enumerate(pairs):
+            samples = [
+                panel_df.loc[panel_df["Condition"] == condition, column].dropna()
+                for condition in pair
+            ]
+            for i, stat_test in enumerate(stat_tests):
+                results[(i, panel, k)] = stat_test(*samples)
+
+    if holm_correction is not None:
+        families = {}
+        for (i, panel, k), result in results.items():
+            family = {"panel": (i, panel), "pair": (i, k), "figure": (i,)}[
+                holm_correction
+            ]
+            families.setdefault(family, []).append(result)
+        for family_results in families.values():
+            _apply_holm_correction(family_results)
+
+    annotations = {}
+    for panel in panels:
+        texts = []
+        for k, (first, second) in enumerate(pairs):
+            pair_results = [results[(i, panel, k)] for i in range(len(tests))]
+            if verbose:
+                for result in pair_results:
+                    print(f"{first} vs. {second}: {result.formatted_output}")
+            texts.append(
+                "\n".join(
+                    _format_test_result(name, result)
+                    for name, result in zip(tests, pair_results)
+                )
+            )
+        annotations[panel] = (pairs, texts)
+    return annotations
+
+
+def _annotate_significance(
+    conditions_to_plot: list,
+    column: str,
+    ax: matplotlib.axes.Axes,
+    pairs: list[tuple],
+    texts: list[str],
+    event_index: int,
+    shown_df: pd.DataFrame,
+    plot_type: str = "boxplot",
+) -> None:
+    """
+    Draw significance brackets with precomputed texts on a single subplot.
+
+    The brackets are placed from ``shown_df``, so the plot can display
+    transformed values while the texts come from tests on the original ones.
+
+    Parameters:
+        conditions_to_plot (list) : Ordered condition identifiers.
+        column (str) : Column name of the y-variable.
+        ax (matplotlib.axes.Axes) : Axes object of the target subplot.
+        pairs (list[tuple]) : Pairs of conditions to bracket.
+        texts (list[str]) : Bracket texts, one per pair.
+        event_index (int) : The ``"Order"`` value identifying the current subplot.
+        shown_df (pandas.DataFrame) : The values drawn on the axes, with
+            ``"Order"``, ``"Condition"`` and ``column`` columns.
+        plot_type (str) : ``"boxplot"``, ``"violinplot"`` or ``"swarmplot"``.
+            Defaults to ``"boxplot"``.
 
     Returns:
         None
+
+    Raises:
+        ValueError : If ``texts`` does not have one text per pair.
     """
-    if custom_texts is not None:
-        if significance_pairs is None or len(custom_texts) != len(significance_pairs):
-            raise ValueError(
-                "custom_texts needs one text per pair of significance_pairs."
-            )
-        pairs, texts = list(significance_pairs), list(custom_texts)
-    else:
-        tests = [test] if isinstance(test, str) else list(test)
-        df_filtered = df[df["Order"] == event_index]
-
-        print(
-            f"\nSample sizes (non-NaN) for event index {event_index}, column '{column}':"
-        )
-        if verbose:
-            for condition in conditions_to_plot:
-                condition_data = df_filtered[df_filtered["Condition"] == condition][
-                    column
-                ]
-                n = condition_data.notna().sum()
-                print(f"Condition {condition}: n={n}")
-
-        if significance_pairs is None:
-            pairs = list(combinations(df["Condition"].unique(), 2))
-        else:
-            pairs = significance_pairs
-        stat_tests = [_get_stat_test(name) for name in tests]
-        texts = []
-        for first, second in pairs:
-            first_values = df_filtered.loc[df_filtered["Condition"] == first, column]
-            second_values = df_filtered.loc[df_filtered["Condition"] == second, column]
-            lines = []
-            for name, stat_test in zip(tests, stat_tests):
-                result = stat_test(first_values.dropna(), second_values.dropna())
-                if verbose:
-                    print(f"{first} vs. {second}: {result.formatted_output}")
-                lines.append(_format_test_result(name, result))
-            texts.append("\n".join(lines))
-
-    if shown_df is None:
-        shown_df = df
+    if len(texts) != len(pairs):
+        raise ValueError("texts needs one text per pair.")
     shown_values = shown_df.loc[shown_df["Order"] == event_index]
 
     def draw_brackets() -> None:
         annotator = Annotator(
-            ax=boxplot,
+            ax=ax,
             pairs=pairs,
             data=shown_values,
             x="Condition",
@@ -374,29 +448,49 @@ def _annotate_significance(
             plot=plot_type,
         )
         annotator.configure(loc="inside", verbose=False)
-        annotator.set_custom_annotations(texts)
+        annotator.set_custom_annotations(list(texts))
         annotator.annotate()
 
     # statannotations stacks brackets in axes fractions, then raises the y limit to
     # fit them, which squeezes the text it measured into overlap. The text and
     # bracket heights are fixed in axes fractions while the data shrinks as the
     # limit rises, so the first pass tells us the limit at which everything fits.
-    n_lines, n_texts = len(boxplot.lines), len(boxplot.texts)
-    bottom, top = boxplot.get_ylim()
+    n_lines, n_texts = len(ax.lines), len(ax.texts)
+    bottom, top = ax.get_ylim()
     draw_brackets()
-    stack_top = _axis_fraction(boxplot, bottom, boxplot.get_ylim()[1]) / 1.04
-    for artist in boxplot.lines[n_lines:] + boxplot.texts[n_texts:]:
+    stack_top = _axis_fraction(ax, bottom, ax.get_ylim()[1]) / 1.04
+    for artist in ax.lines[n_lines:] + ax.texts[n_texts:]:
         artist.remove()
-    boxplot.set_ylim(bottom, top)
+    ax.set_ylim(bottom, top)
 
-    data_top = _axis_fraction(boxplot, bottom, np.nanmax(shown_values[column]))
+    data_top = _axis_fraction(ax, bottom, np.nanmax(shown_values[column]))
     annotations_height = stack_top - data_top
     # past 90 % of the axis the brackets cannot fit; leave the first-pass limit
     axis_top = data_top / max(1 / 1.04 - annotations_height, 0.1)
-    to_axes = boxplot.transScale + boxplot.transLimits
+    to_axes = ax.transScale + ax.transLimits
     new_top = to_axes.inverted().transform((0, axis_top))[1]
-    boxplot.set_ylim(bottom, max(new_top, top))
+    ax.set_ylim(bottom, max(new_top, top))
     draw_brackets()
+
+
+def _apply_holm_correction(results: list[StatResult]) -> None:
+    """
+    Replace the p-values of a family of test results with Holm-adjusted ones.
+
+    Parameters:
+        results (list[StatResult]): Results of one test across pairs; their
+            ``pvalue`` is overwritten in place.
+
+    Returns:
+        None
+    """
+    tested = [result for result in results if not np.isnan(result.pvalue)]
+    if not tested:
+        return
+    adjusted = multipletests([result.pvalue for result in tested], method="holm")[1]
+    for result, pvalue in zip(tested, adjusted):
+        result.pvalue = pvalue
+        result.correction_method = "Holm-Bonferroni"
 
 
 def _axis_fraction(ax: matplotlib.axes.Axes, low: float, high: float) -> float:
@@ -431,7 +525,8 @@ def _add_metric_text(
     Annotate each condition with its relevant summary statistic below the plot area.
 
     The statistic displayed depends on the test: median (Mann-Whitney, Kruskal-Wallis,
-    Wilcoxon), mean (t-test, Welch), std (Levene), or CV % (Feltz-Miller, MSLR).
+    Wilcoxon), mean (t-test, Welch), std (Levene, Brown-Forsythe), or CV %
+    (Feltz-Miller, MSLR).
     With several tests, the statistic of each is stacked in one box, in test order
     and without repeats.
 
@@ -469,6 +564,7 @@ def _add_metric_text(
         "Wilcoxon": ("median", "M"),
         "Feltz-Miller": ("cv", "CV"),
         "MSLR": ("cv", "CV"),
+        "Brown-Forsythe": ("std", "σ"),
     }
 
     tests = [test] if isinstance(test, str) else list(test)
@@ -564,6 +660,7 @@ def _plot_violinplot(
     inner: str | None = "box",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
     custom_annotations: dict[int, tuple[list[tuple], list[str]]] | None = None,
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
 ) -> tuple[list[float], list[float]]:
     """
     Draw violin + swarm subplots for each ordering group.
@@ -597,6 +694,9 @@ def _plot_violinplot(
             value, as ``(pairs, texts)``.  When given, these are drawn instead of
             running ``test``; groups without an entry or without pairs get no
             brackets.  Defaults to ``None``.
+        holm_correction (str or None) : Holm family passed to
+            ``_compute_significance_annotations``; ignored with
+            ``custom_annotations``.  Defaults to ``"pair"``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -604,6 +704,10 @@ def _plot_violinplot(
     shown_df = df.copy()
     if display_transform is not None:
         shown_df[column] = display_transform(df[column].to_numpy())
+    if plot_significance and custom_annotations is None:
+        custom_annotations = _compute_significance_annotations(
+            df, conditions_to_plot, column, significance_pairs, test, holm_correction
+        )
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -687,30 +791,17 @@ def _plot_violinplot(
                     test=test,
                     display_transform=display_transform,
                 )
-            if custom_annotations is None:
+            pairs, texts = custom_annotations.get(event_index, ([], []))
+            if pairs:
                 _annotate_significance(
-                    df,
-                    conditions_to_plot,
-                    column,
-                    violinplot,
-                    significance_pairs,
-                    event_index,
-                    plot_type="violinplot",
-                    test=test,
-                    shown_df=shown_df,
-                )
-            elif custom_annotations.get(event_index, ([], []))[0]:
-                pairs, texts = custom_annotations[event_index]
-                _annotate_significance(
-                    df,
                     conditions_to_plot,
                     column,
                     violinplot,
                     pairs,
+                    texts,
                     event_index,
+                    shown_df,
                     plot_type="violinplot",
-                    shown_df=shown_df,
-                    custom_texts=texts,
                 )
 
         min_y, max_y = current_ax.get_ylim()
@@ -737,6 +828,7 @@ def _plot_boxplot(
     test: str | list[str] = "Mann-Whitney",
     return_data: bool = False,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
 ) -> tuple[list[float], list[float]]:
     """
     Draw box + swarm subplots for each ordering group.
@@ -766,6 +858,9 @@ def _plot_boxplot(
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier detection and metrics use the original
             values.  Defaults to ``None``.
+        holm_correction (str or None) : Holm family passed to
+            ``_compute_significance_annotations``; ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -773,6 +868,10 @@ def _plot_boxplot(
     shown_df = df.copy()
     if display_transform is not None:
         shown_df[column] = display_transform(df[column].to_numpy())
+    if plot_significance:
+        annotations = _compute_significance_annotations(
+            df, conditions_to_plot, column, significance_pairs, test, holm_correction
+        )
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -858,15 +957,15 @@ def _plot_boxplot(
                     test=test,
                     display_transform=display_transform,
                 )
+            pairs, texts = annotations[event_index]
             _annotate_significance(
-                df,
                 conditions_to_plot,
                 column,
                 boxplot,
-                significance_pairs,
+                pairs,
+                texts,
                 event_index,
-                test=test,
-                shown_df=shown_df,
+                shown_df,
             )
 
         min_y, max_y = current_ax.get_ylim()
@@ -891,6 +990,7 @@ def _plot_swarmplot(
     hide_outliers: bool = False,
     test: str | list[str] = "Mann-Whitney",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
 ) -> tuple[list[float], list[float]]:
     """
     Draw swarm subplots, colored by condition, for each ordering group.
@@ -918,6 +1018,9 @@ def _plot_swarmplot(
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier detection and metrics use the original
             values.  Defaults to ``None``.
+        holm_correction (str or None) : Holm family passed to
+            ``_compute_significance_annotations``; ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -925,6 +1028,10 @@ def _plot_swarmplot(
     shown_df = df.copy()
     if display_transform is not None:
         shown_df[column] = display_transform(df[column].to_numpy())
+    if plot_significance:
+        annotations = _compute_significance_annotations(
+            df, conditions_to_plot, column, significance_pairs, test, holm_correction
+        )
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -995,16 +1102,16 @@ def _plot_swarmplot(
                     test=test,
                     display_transform=display_transform,
                 )
+            pairs, texts = annotations[event_index]
             _annotate_significance(
-                df,
                 conditions_to_plot,
                 column,
                 swarmplot,
-                significance_pairs,
+                pairs,
+                texts,
                 event_index,
+                shown_df,
                 plot_type="swarmplot",
-                test=test,
-                shown_df=shown_df,
             )
 
         min_y, max_y = current_ax.get_ylim()
@@ -1132,6 +1239,7 @@ def violinplot(
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1173,6 +1281,12 @@ def violinplot(
             a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
             per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
+        holm_correction (str or None) : Correct for multiple comparisons with the
+            Holm method; the brackets show the adjusted p-values of each test.
+            ``"pair"`` adjusts each pair across all subplots, ``"panel"`` adjusts
+            the pairs within each subplot, ``"figure"`` adjusts every pair of
+            every subplot together, and ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; falls back to ``column``.
@@ -1253,6 +1367,7 @@ def violinplot(
         show_swarm=show_swarm,
         hide_outliers=hide_outliers,
         test=significance_test,
+        holm_correction=holm_correction,
         display_transform=display_transform,
     )
 
@@ -1297,6 +1412,7 @@ def boxplot(
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1340,6 +1456,12 @@ def boxplot(
             a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
             per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
+        holm_correction (str or None) : Correct for multiple comparisons with the
+            Holm method; the brackets show the adjusted p-values of each test.
+            ``"pair"`` adjusts each pair across all subplots, ``"panel"`` adjusts
+            the pairs within each subplot, ``"figure"`` adjusts every pair of
+            every subplot together, and ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; falls back to ``column``.
@@ -1421,6 +1543,7 @@ def boxplot(
         log_scale=log_scale,
         show_metric=show_metric,
         test=significance_test,
+        holm_correction=holm_correction,
         display_transform=display_transform,
     )
 
@@ -1465,6 +1588,7 @@ def swarmplot(
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1506,6 +1630,12 @@ def swarmplot(
             a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
             per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
+        holm_correction (str or None) : Correct for multiple comparisons with the
+            Holm method; the brackets show the adjusted p-values of each test.
+            ``"pair"`` adjusts each pair across all subplots, ``"panel"`` adjusts
+            the pairs within each subplot, ``"figure"`` adjusts every pair of
+            every subplot together, and ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; falls back to ``column``.
@@ -1583,6 +1713,7 @@ def swarmplot(
         show_metric=show_metric,
         hide_outliers=hide_outliers,
         test=significance_test,
+        holm_correction=holm_correction,
         display_transform=display_transform,
     )
 
@@ -1627,6 +1758,7 @@ def violinplot_larval_stage(
     plot_significance: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1671,6 +1803,12 @@ def violinplot_larval_stage(
             a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
             per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
+        holm_correction (str or None) : Correct for multiple comparisons with the
+            Holm method; the brackets show the adjusted p-values of each test.
+            ``"pair"`` adjusts each pair across all subplots, ``"panel"`` adjusts
+            the pairs within each subplot, ``"figure"`` adjusts every pair of
+            every subplot together, and ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; falls back to ``column``.
@@ -1757,6 +1895,7 @@ def violinplot_larval_stage(
         show_swarm=show_swarm,
         hide_outliers=hide_outliers,
         test=significance_test,
+        holm_correction=holm_correction,
     )
 
     _set_labels_and_legend(
@@ -1794,6 +1933,7 @@ def boxplot_larval_stage(
     plot_significance: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
+    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     legend: dict | None = None,
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
@@ -1837,6 +1977,12 @@ def boxplot_larval_stage(
             a list, e.g. ``["Mann-Whitney", "Levene"]``, every bracket shows one line
             per test, stacked in list order and labelled with the test name.
             Defaults to ``"Mann-Whitney"``.
+        holm_correction (str or None) : Correct for multiple comparisons with the
+            Holm method; the brackets show the adjusted p-values of each test.
+            ``"pair"`` adjusts each pair across all subplots, ``"panel"`` adjusts
+            the pairs within each subplot, ``"figure"`` adjusts every pair of
+            every subplot together, and ``None`` shows the raw p-values.
+            Defaults to ``"pair"``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label; falls back to ``column``.
@@ -1923,6 +2069,7 @@ def boxplot_larval_stage(
         show_swarm=show_swarm,
         hide_outliers=hide_outliers,
         test=significance_test,
+        holm_correction=holm_correction,
     )
 
     _set_labels_and_legend(

@@ -42,6 +42,27 @@ def test_mslr_detects_different_cvs(equal_cv_samples, different_cv_samples):
     assert p_different < 0.001
 
 
+def test_brown_forsythe_statistic_matches_hand_computation():
+    # absolute deviations from the medians are [1, 0, 1] and [2, 0, 2]:
+    # between-group SS = 2/3 on 1 df, within-group SS = 10/3 on 4 df
+    statistic, _ = boxplots.brown_forsythe_test(
+        np.array([1.0, 2.0, 3.0]), np.array([0.0, 2.0, 4.0])
+    )
+    assert statistic == pytest.approx(0.8)
+
+
+def test_brown_forsythe_detects_different_spreads_not_different_centers():
+    rng = np.random.default_rng(0)
+    _, p_shifted = boxplots.brown_forsythe_test(
+        rng.normal(0, 1, 200), rng.normal(5, 1, 200)
+    )
+    _, p_spread = boxplots.brown_forsythe_test(
+        rng.normal(0, 1, 200), rng.normal(0, 3, 200)
+    )
+    assert p_shifted > 0.05
+    assert p_spread < 0.001
+
+
 @pytest.mark.parametrize(
     "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
 )
@@ -68,7 +89,9 @@ def test_event_plots_draw_one_panel_per_event(conditions_struct, plot_function):
 @pytest.mark.parametrize(
     "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
 )
-@pytest.mark.parametrize("test", ["Mann-Whitney", "Feltz-Miller", "MSLR"])
+@pytest.mark.parametrize(
+    "test", ["Mann-Whitney", "Feltz-Miller", "MSLR", "Brown-Forsythe"]
+)
 def test_event_plots_annotate_significance(conditions_struct, plot_function, test):
     np.random.seed(0)
     fig = plot_function(
@@ -262,6 +285,77 @@ def test_several_tests_share_one_bracket(conditions_struct, plot_function):
         )
         assert float(std_line.split("=")[1]) == pytest.approx(
             np.std(value, ddof=1), rel=5e-3
+        )
+
+
+def _holm(p_values):
+    # the k-th smallest p is scaled by (m - k + 1), kept monotone, capped at 1
+    p_values = np.asarray(p_values, dtype=float)
+    order = np.argsort(p_values)
+    m = len(p_values)
+    adjusted = np.empty(m)
+    adjusted[order] = np.minimum(
+        np.maximum.accumulate(p_values[order] * (m - np.arange(m))), 1
+    )
+    return adjusted
+
+
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
+@pytest.mark.parametrize("family", [None, "panel", "pair", "figure"])
+def test_holm_correction_adjusts_shown_p_values_within_family(plot_function, family):
+    rng = np.random.default_rng(14)
+    conditions_struct = [
+        {"description": f"condition {i}", "value": rng.normal(1, spread, (25, 2))}
+        for i, spread in enumerate([0.1, 0.15, 0.2])
+    ]
+    pairs = [(0, 1), (0, 2), (1, 2)]
+    # raw[panel, pair]
+    raw = np.array(
+        [
+            [
+                stats.levene(
+                    conditions_struct[a]["value"][:, panel],
+                    conditions_struct[b]["value"][:, panel],
+                ).pvalue
+                for a, b in pairs
+            ]
+            for panel in range(2)
+        ]
+    )
+    assert raw.min() > 0.01, "p-values must be shown as numbers, not thresholds"
+    expected = {
+        None: raw,
+        "panel": np.array([_holm(row) for row in raw]),
+        "pair": np.array([_holm(column) for column in raw.T]).T,
+        "figure": _holm(raw.ravel()).reshape(raw.shape),
+    }[family]
+
+    fig = plot_function(
+        conditions_struct,
+        "value",
+        [0, 1, 2],
+        log_scale=False,
+        plot_significance=True,
+        significance_test="Levene",
+        holm_correction=family,
+        hide_outliers=False,
+        legend={"description": ""},
+    )
+    for ax, expected_panel in zip(fig.axes, expected, strict=True):
+        shown = [float(t.get_text().split("=")[1]) for t in ax.texts]
+        np.testing.assert_allclose(np.sort(shown), np.sort(expected_panel), atol=0.005)
+
+
+def test_unknown_holm_family_raises_value_error(conditions_struct):
+    with pytest.raises(ValueError, match="holm_correction"):
+        boxplots.boxplot(
+            conditions_struct,
+            "body_seg_length_at_ecdysis",
+            [0, 1],
+            plot_significance=True,
+            holm_correction="bogus",
         )
 
 
