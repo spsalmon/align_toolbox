@@ -298,7 +298,9 @@ def create_fixed_ax_sized_fig(
     fig_w = left + ncols * ax_w + (ncols - 1) * wspace + right
     fig_h = bottom + nrows * ax_h + (nrows - 1) * hspace + top
 
-    kwargs = {"figsize": (fig_w, fig_h)}
+    # The Divider fixes every axes position, so a layout engine enabled through
+    # rcParams would only fight it (and warn that it finds no gridspec).
+    kwargs = {"figsize": (fig_w, fig_h), "layout": "none"}
     if dpi is not None:
         kwargs["dpi"] = dpi
     fig = plt.figure(**kwargs)
