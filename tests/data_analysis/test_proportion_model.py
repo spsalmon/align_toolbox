@@ -10,7 +10,11 @@ from scipy.stats import expon
 from xarray import Dataset, DataTree
 
 from align_toolbox.data_analysis import proportion_model as pmod
-from align_toolbox.plotting.plotting_structure import _compute_values_at_molt
+from align_toolbox.data_analysis.time_series import compute_series_at_time_classified
+from align_toolbox.plotting.plotting_structure import (
+    _compute_values_at_molt,
+    get_time_and_ecdysis,
+)
 from tests.data_analysis.proportion_simulation import (
     ALLOMETRY_CELLS,
     ALLOMETRY_LOW_GAP_CELLS,
@@ -1780,6 +1784,39 @@ def test_molt_percentages_equal_recomputed_values_at_molt(rng, experiment_time):
         np.testing.assert_array_equal(
             sampled.to_numpy(), np.log(condition[f"{column}_at_ecdysis"][:, 1:])
         )
+
+
+@pytest.mark.parametrize("experiment_time", [True, False], ids=["hours", "frames"])
+def test_percentages_ignore_padding_of_shorter_worms(experiment_time):
+    """A worm shorter than the condition's longest one is padded with NaN
+    frames; the padding must not change its smoothed series."""
+    n_frames = 285
+    x = np.tile(_x_of_hours(HOURS), (2, 1))
+    condition = _series_condition(x, 2 * x, ECDYSIS)
+    condition["qc"] = condition["qc"].astype(object)
+    condition["qc"][:, ::17] = "error"
+    for key, padding in [
+        ("x", np.nan),
+        ("y", np.nan),
+        ("time", np.nan),
+        ("experiment_time_hours", np.nan),
+        ("qc", "error"),
+    ]:
+        condition[key][0, n_frames:] = padding
+    if not experiment_time:
+        condition["experiment_time_hours"] = np.full(x.shape, np.nan)
+    percentages = [0.5, 0.75, 0.9, 1.0]
+    values = pmod.series_at_development_percentages(condition, "x", percentages)
+
+    time, ecdysis = get_time_and_ecdysis(condition)
+    times = pmod.times_at_development_percentages(ecdysis, percentages)
+    expected = compute_series_at_time_classified(
+        condition["x"][0, :n_frames],
+        times[0],
+        time[0, :n_frames],
+        condition["qc"][0, :n_frames],
+    )
+    np.testing.assert_allclose(values[0], expected)
 
 
 def test_missing_ecdysis_gives_nan_only_in_the_affected_stages():

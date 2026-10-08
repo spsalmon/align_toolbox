@@ -223,12 +223,15 @@ def series_at_development_percentages(
     values = np.full(times.shape, np.nan)
     for i in range(series.shape[0]):
         known = ~np.isnan(times[i])
+        # leave out the padding of worms shorter than the condition's longest
+        # one, so that it does not bend the smoothed series
+        frames = ~np.isnan(np.asarray(condition["time"][i], dtype=float))
         if known.any():
             values[i, known] = compute_series_at_time_classified(
-                series[i],
+                series[i][frames],
                 times[i, known],
-                time[i],
-                qc[i],
+                time[i][frames],
+                qc[i][frames],
                 lmbda=lmbda,
                 medfilt_window=medfilt_window,
                 bspline_order=bspline_order,
