@@ -279,6 +279,35 @@ def test_build_plotting_struct_recompute_values_at_molt(
     ] == pytest.approx(volume[MOLT_INDICES[1]], rel=0.05)
 
 
+def test_build_plotting_struct_recompute_values_at_molt_without_experiment_time(
+    tmp_path, conditions_yaml, monkeypatch
+):
+    """Time starts at FIRST_TIME, so molts must be evaluated at their Time
+    value, not at their frame index."""
+    monkeypatch.chdir(tmp_path)
+    filemap = pl.concat(
+        [_point_rows(0, MOLT_INDICES), _point_rows(1, MOLT_INDICES)]
+    ).drop("ExperimentTime")
+    path = tmp_path / "filemap.parquet"
+    filemap.write_parquet(path)
+    conditions_struct, _ = ps.build_plotting_struct(
+        str(tmp_path),
+        str(path),
+        conditions_yaml,
+        organ_channels={"body": "ch2"},
+        recompute_values_at_molt=True,
+    )
+    control = conditions_struct[0]
+    _, ecdysis = ps.get_time_and_ecdysis(control)
+    np.testing.assert_array_equal(ecdysis, [FIRST_TIME + np.array(MOLT_INDICES)])
+    volume = control["body_seg_str_volume"][0]
+    np.testing.assert_allclose(
+        control["body_seg_str_volume_at_ecdysis"][0],
+        volume[MOLT_INDICES],
+        rtol=0.05,
+    )
+
+
 def test_build_plotting_struct_drops_ignored_frames_and_molts(
     tmp_path, conditions_yaml, monkeypatch
 ):

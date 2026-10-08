@@ -677,8 +677,8 @@ def get_time_and_ecdysis(condition_dict: dict) -> tuple[np.ndarray, np.ndarray]:
     """
     Select the time base of a condition and the ecdysis times expressed in it.
 
-    Experiment time in hours is used when any of it is known, otherwise frame
-    indices.
+    Experiment time in hours is used when any of it is known, otherwise the
+    ``Time`` values of the frames.
 
     Parameters:
         condition_dict (dict) : Condition dict holding ``"experiment_time_hours"``,
@@ -694,7 +694,15 @@ def get_time_and_ecdysis(condition_dict: dict) -> tuple[np.ndarray, np.ndarray]:
             condition_dict["experiment_time_hours"],
             condition_dict["ecdysis_experiment_time_hours"],
         )
-    return condition_dict["time"], condition_dict["ecdysis_index"]
+    # look the molts up through their frame index rather than using
+    # ecdysis_time_step, so a molt whose Time has no frame stays NaN
+    time = condition_dict["time"]
+    ecdysis_index = condition_dict["ecdysis_index"]
+    known = ~np.isnan(ecdysis_index)
+    ecdysis = np.full(ecdysis_index.shape, np.nan)
+    rows = np.nonzero(known)[0]
+    ecdysis[known] = time[rows, ecdysis_index[known].astype(int)]
+    return time, ecdysis
 
 
 def _compute_values_at_molt(
