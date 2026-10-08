@@ -436,7 +436,7 @@ def build_plotting_struct(
         experiment_filemap.select(pl.col("condition_id"))
         .unique(maintain_order=True)
         .to_numpy()
-        .squeeze()
+        .ravel()
     ):
         condition_dict = _process_condition_id_plotting_structure(
             experiment_dir,
