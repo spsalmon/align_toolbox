@@ -756,11 +756,15 @@ def _compute_values_at_molt(
 
         ecdys = ecdysis[i][idx_values_to_recompute]
 
+        # leave out the padding of points shorter than the condition's
+        # longest one, so that it does not bend the smoothed series
+        frames = ~np.isnan(condition_dict["time"][i])
+
         recomputed_values = compute_series_at_time_classified(
-            condition_dict[column][i],
+            condition_dict[column][i][frames],
             ecdys,
-            time[i],
-            worm_types[i],
+            time[i][frames],
+            worm_types[i][frames],
         )
 
         updated_values_at_molt[i][idx_values_to_recompute] = recomputed_values

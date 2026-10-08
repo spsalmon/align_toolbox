@@ -3,6 +3,7 @@ import polars as pl
 import pytest
 import yaml
 
+from align_toolbox.data_analysis import compute_series_at_time_classified
 from align_toolbox.plotting import plotting_structure as ps
 
 N_FRAMES = 40
@@ -305,6 +306,41 @@ def test_build_plotting_struct_recompute_values_at_molt_without_experiment_time(
         control["body_seg_str_volume_at_ecdysis"][0],
         volume[MOLT_INDICES],
         rtol=0.05,
+    )
+
+
+def test_recompute_values_at_molt_ignores_padding_of_shorter_points(
+    tmp_path, conditions_yaml, monkeypatch
+):
+    """A point shortened by Ignore is padded to the condition's longest point;
+    the padding must not change its values at molt."""
+    monkeypatch.chdir(tmp_path)
+    filemap = pl.concat(
+        [_point_rows(0, MOLT_INDICES), _point_rows(2, MOLT_INDICES)]
+    ).with_columns(
+        ((pl.col("Point") == 0) & (pl.col("Time") >= FIRST_TIME + 33)).alias("Ignore")
+    )
+    path = tmp_path / "filemap.parquet"
+    filemap.write_parquet(path)
+    conditions_struct, _ = ps.build_plotting_struct(
+        str(tmp_path),
+        str(path),
+        {"conditions": [{"point_range": [[0, 2]], "description": "all"}]},
+        organ_channels={"body": "ch2"},
+        recompute_values_at_molt=True,
+    )
+    condition = conditions_struct[0]
+    time, ecdysis = ps.get_time_and_ecdysis(condition)
+    kept = ~np.isnan(time[0])
+    assert kept.sum() == 33
+    expected = compute_series_at_time_classified(
+        condition["body_seg_str_volume"][0][kept],
+        ecdysis[0][:4],
+        time[0][kept],
+        condition["body_seg_str_qc"][0][kept],
+    )
+    np.testing.assert_allclose(
+        condition["body_seg_str_volume_at_ecdysis"][0][:4], expected
     )
 
 
