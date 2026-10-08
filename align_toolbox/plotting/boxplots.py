@@ -1078,7 +1078,7 @@ def _swarm_dot_size(df: pd.DataFrame, event_index: int, column: str) -> float:
     Compute a dot size for swarm plots that shrinks as sample count grows.
 
     Uses ``max(3, 6 * sqrt(20 / max(20, n_max)))`` so dots stay at 6 pt up to
-    20 points and decay smoothly above that, flooring at 3 pt.
+    20 points and decay smoothly above that, flooring at 1 pt.
 
     Parameters:
         df (pandas.DataFrame) : Full data DataFrame with ``"Order"`` and ``"Condition"`` columns.
@@ -1093,7 +1093,7 @@ def _swarm_dot_size(df: pd.DataFrame, event_index: int, column: str) -> float:
         event_data.groupby("Condition")[column].apply(lambda s: s.notna().sum()).max()
     )
     n_max = max(20, int(n_max))
-    return max(3.0, 6.0 * (20.0 / n_max) ** 0.5)
+    return max(1.0, 6.0 * (20.0 / n_max) ** 0.5)
 
 
 def _worm_identity(condition_dict: dict, worm: int) -> dict:
