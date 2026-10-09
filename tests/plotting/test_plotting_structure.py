@@ -435,3 +435,30 @@ def test_combine_experiments_rejects_mismatched_organ_channels(two_experiments):
     filemaps, configs = two_experiments
     with pytest.raises(ValueError):
         ps.combine_experiments(filemaps, configs, organ_channels=[{}, {}, {}])
+
+
+def test_combine_experiments_keeps_rows_aligned_when_a_key_is_missing(
+    two_experiments, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    filemaps, configs = two_experiments
+    # only experiment b has a pharynx channel
+    filemap_b = pl.read_csv(filemaps[1])
+    filemap_b = filemap_b.with_columns(
+        (pl.col("ch2_seg_str_volume") / 10).alias("ch1_seg_str_volume"),
+        pl.col("ch2_seg_str_worm_type").alias("ch1_seg_str_worm_type"),
+    )
+    filemap_b.write_csv(filemaps[1])
+    merged = ps.combine_experiments(
+        filemaps, configs, organ_channels={"body": "ch2", "pharynx": "ch1"}
+    )
+    control = merged[0]
+    assert control["pharynx_seg_str_qc"].shape == control["time"].shape
+    assert control["pharynx_seg_str_volume"].shape == control["time"].shape
+    # point 0 of experiment a has no pharynx, point 0 of experiment b does
+    assert np.isnan(control["pharynx_seg_str_volume"][0]).all()
+    np.testing.assert_allclose(
+        control["pharynx_seg_str_volume"][1],
+        control["body_seg_str_volume"][1] / 10,
+    )
+    assert (control["pharynx_seg_str_qc"][0] == "error").all()

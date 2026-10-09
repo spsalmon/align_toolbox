@@ -903,6 +903,43 @@ def remove_unwanted_info(conditions_info: list[dict]) -> list[dict]:
     return conditions_info
 
 
+def _fill_missing_arrays(conditions: list[dict], ignored_keys: set) -> None:
+    """
+    Add placeholder rows for arrays some of the conditions to merge lack.
+
+    Every per-point array must keep one row per point once the conditions are
+    concatenated, so a condition missing an array gets one of its own points'
+    length, filled with NaN for numeric arrays, ``"error"`` for QC arrays and
+    ``None`` otherwise.
+
+    Parameters:
+        conditions (list[dict]) : Condition dicts about to be merged, modified in
+            place.
+        ignored_keys (set) : Metadata keys that are not merged.
+    """
+    templates = {}
+    for condition in conditions:
+        for key, value in condition.items():
+            if key not in ignored_keys and isinstance(value, np.ndarray):
+                templates.setdefault(key, value)
+
+    for condition in conditions:
+        n_points = condition["point"].shape[0]
+        for key, template in templates.items():
+            if key in condition:
+                continue
+            print(
+                f"{key} is missing from experiment "
+                f"{condition['experiment'].ravel()[0]}, filling it with placeholders."
+            )
+            shape = (n_points, *template.shape[1:])
+            if np.issubdtype(template.dtype, np.number) or template.dtype == bool:
+                condition[key] = np.full(shape, np.nan)
+            else:
+                fill_value = "error" if "qc" in key else None
+                condition[key] = np.full(shape, fill_value, dtype=object)
+
+
 def combine_experiments(
     filemap_paths: list[str],
     config_paths: list[str],
@@ -992,9 +1029,11 @@ def combine_experiments(
 
     merged_conditions_struct = []
     for indices in condition_dict.values():
-        base_condition = all_conditions_struct[indices[0]]
-        for idx in indices[1:]:
-            for key, value in all_conditions_struct[idx].items():
+        conditions = [all_conditions_struct[idx] for idx in indices]
+        _fill_missing_arrays(conditions, conditions_info_keys)
+        base_condition = conditions[0]
+        for condition in conditions[1:]:
+            for key, value in condition.items():
                 if key not in conditions_info_keys:
                     if isinstance(value, np.ndarray):
                         if key not in base_condition:
