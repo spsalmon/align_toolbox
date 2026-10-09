@@ -483,3 +483,88 @@ def _detrend_rescaled_series_population_mean(series: np.ndarray) -> np.ndarray:
     detrended_series = series - population_mean
 
     return detrended_series
+
+
+def filter_points_by_error_rate(
+    conditions_struct: list,
+    qc_key: str,
+    max_error_percentage: float,
+) -> list:
+    """
+    Set to NaN every series of a QC's organ for points with too many error frames.
+
+    A point's error rate is the percentage of its frames classified as ``"error"``
+    in ``qc_key``, leaving out the padding of points shorter than the condition's
+    longest one. The series affected are the numeric per-point arrays whose key
+    starts with the QC's organ prefix (``"pharynx"`` for ``"pharynx_seg_qc"``);
+    when the organ has several QC columns, only the series best matched to
+    ``qc_key`` are affected. The number of ignored points is printed per condition.
+
+    Parameters:
+        conditions_struct (list) : List of condition dicts.
+        qc_key (str) : Key of the QC classification array, of shape
+            ``(n_points, n_frames)``.
+        max_error_percentage (float) : Points with an error rate strictly above
+            this percentage, between 0 and 100, are ignored.
+
+    Returns:
+        list : The modified ``conditions_struct`` with the series of ignored points
+            set to NaN in place.
+
+    Raises:
+        ValueError: If ``max_error_percentage`` is outside [0, 100] or ``qc_key``
+            is missing from a condition.
+    """
+    if not 0 <= max_error_percentage <= 100:
+        raise ValueError(
+            f"max_error_percentage must be between 0 and 100, got {max_error_percentage}."
+        )
+
+    organ_prefix = f"{qc_key.split('_')[0]}_"
+    total_ignored, total_points = 0, 0
+
+    for condition in conditions_struct:
+        if qc_key not in condition:
+            raise ValueError(
+                f"QC key '{qc_key}' not found in condition "
+                f"{condition.get('condition_id')}."
+            )
+        qc = condition[qc_key]
+        n_points = qc.shape[0]
+
+        frames = ~np.isnan(condition["time"])
+        n_errors = np.sum((qc == "error") & frames, axis=1)
+        n_frames = np.maximum(np.sum(frames, axis=1), 1)
+        ignored = 100 * n_errors / n_frames > max_error_percentage
+
+        organ_qc_keys = [
+            key for key in condition if key.startswith(organ_prefix) and "qc" in key
+        ]
+        for key, values in condition.items():
+            if (
+                key == qc_key
+                or not key.startswith(organ_prefix)
+                or not isinstance(values, np.ndarray)
+                or values.ndim == 0
+                or values.shape[0] != n_points
+                or not np.issubdtype(values.dtype, np.floating)
+            ):
+                continue
+            if (
+                len(organ_qc_keys) > 1
+                and find_best_string_match(key, organ_qc_keys) != qc_key
+            ):
+                continue
+            values[ignored] = np.nan
+
+        n_ignored = int(np.sum(ignored))
+        total_ignored += n_ignored
+        total_points += n_points
+        print(
+            f"Condition {condition.get('condition_id')}: ignored {n_ignored}/"
+            f"{n_points} points with more than {max_error_percentage}% of "
+            f"errors in {qc_key}."
+        )
+
+    print(f"Total: ignored {total_ignored}/{total_points} points.")
+    return conditions_struct

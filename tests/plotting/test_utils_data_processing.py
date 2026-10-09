@@ -103,3 +103,55 @@ def test_smooth_and_rescale_series(conditions_struct, flatten, shape):
     )
     assert struct[0]["volume_smoothed"].shape == (30, 100)
     assert struct[0]["volume_smoothed_rescaled"].shape == shape
+
+
+def _struct_with_pharynx(conditions_struct):
+    condition = conditions_struct[0]
+    n_worms = condition["body_seg_volume"].shape[0]
+    pharynx_qc = np.full((n_worms, 100), "worm", dtype=object)
+    # worm 0: 30 % errors, worm 1: 10 % errors
+    pharynx_qc[0, :30] = "error"
+    pharynx_qc[1, :10] = "error"
+    # worm 2 is 50 frames long, its padding is "error" but only 20 % of its
+    # real frames are
+    condition["time"][2, 50:] = np.nan
+    pharynx_qc[2, 50:] = "error"
+    pharynx_qc[2, :10] = "error"
+    condition["pharynx_seg_qc"] = pharynx_qc
+    condition["pharynx_seg_volume"] = condition["body_seg_volume"] / 10
+    condition["pharynx_seg_volume_at_ecdysis"] = (
+        condition["body_seg_volume_at_ecdysis"] / 10
+    )
+    return [condition]
+
+
+def test_filter_points_by_error_rate_only_affects_the_qc_organ(conditions_struct):
+    struct = _struct_with_pharynx(conditions_struct)
+    body_volume = struct[0]["body_seg_volume"].copy()
+    udp.filter_points_by_error_rate(struct, "pharynx_seg_qc", 25)
+    condition = struct[0]
+
+    for key in ("pharynx_seg_volume", "pharynx_seg_volume_at_ecdysis"):
+        assert np.isnan(condition[key][0]).all()
+        assert not np.isnan(condition[key][1:]).any()
+    np.testing.assert_array_equal(condition["body_seg_volume"], body_volume)
+
+
+def test_filter_points_by_error_rate_leaves_out_padding(conditions_struct):
+    struct = _struct_with_pharynx(conditions_struct)
+    udp.filter_points_by_error_rate(struct, "pharynx_seg_qc", 19)
+    ignored = np.isnan(struct[0]["pharynx_seg_volume_at_ecdysis"]).all(axis=1)
+    np.testing.assert_array_equal(np.nonzero(ignored)[0], [0, 2])
+
+
+def test_filter_points_by_error_rate_reports_ignored_points(conditions_struct, capsys):
+    struct = _struct_with_pharynx(conditions_struct)
+    udp.filter_points_by_error_rate(struct, "pharynx_seg_qc", 5)
+    assert "ignored 3/30 points" in capsys.readouterr().out
+
+
+def test_filter_points_by_error_rate_rejects_out_of_range_threshold(
+    conditions_struct,
+):
+    with pytest.raises(ValueError):
+        udp.filter_points_by_error_rate(conditions_struct, "body_seg_qc", 150)
