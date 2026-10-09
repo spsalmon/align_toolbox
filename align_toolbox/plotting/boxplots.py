@@ -306,7 +306,7 @@ def _compute_significance_annotations(
     test: str | list[str] = "Mann-Whitney",
     holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
     verbose: bool = True,
-) -> dict[int, tuple[list[tuple], list[str]]]:
+) -> tuple[dict[int, tuple[list[tuple], list[str]]], pd.DataFrame]:
     """
     Run the significance tests of every subplot and format their bracket texts.
 
@@ -333,8 +333,12 @@ def _compute_significance_annotations(
             Defaults to ``True``.
 
     Returns:
-        dict[int, tuple[list[tuple], list[str]]] : ``(pairs, texts)`` keyed by
-            ``"Order"`` value, one text per pair.
+        tuple[dict[int, tuple[list[tuple], list[str]]], pandas.DataFrame] :
+            ``(pairs, texts)`` keyed by ``"Order"`` value, one text per pair; and
+            one row per panel, pair and test with columns ``"Order"``,
+            ``"Condition 1"``, ``"Condition 2"``, ``"n 1"``, ``"n 2"``,
+            ``"Test"``, ``"Statistic"``, ``"p-value"`` (uncorrected) and, with
+            ``holm_correction``, ``"Holm p-value"``.
 
     Raises:
         ValueError : If a test or ``holm_correction`` is not supported.
@@ -354,6 +358,7 @@ def _compute_significance_annotations(
 
     # keyed by (test index, panel, pair index)
     results = {}
+    sample_sizes = {}
     for panel in panels:
         panel_df = df[df["Order"] == panel]
         if verbose:
@@ -368,9 +373,11 @@ def _compute_significance_annotations(
                 panel_df.loc[panel_df["Condition"] == condition, column].dropna()
                 for condition in pair
             ]
+            sample_sizes[(panel, k)] = [len(sample) for sample in samples]
             for i, stat_test in enumerate(stat_tests):
                 results[(i, panel, k)] = stat_test(*samples)
 
+    raw_pvalues = {key: result.pvalue for key, result in results.items()}
     if holm_correction is not None:
         families = {}
         for (i, panel, k), result in results.items():
@@ -396,7 +403,23 @@ def _compute_significance_annotations(
                 )
             )
         annotations[panel] = (pairs, texts)
-    return annotations
+
+    rows = []
+    for (i, panel, k), result in results.items():
+        row = {
+            "Order": panel,
+            "Condition 1": pairs[k][0],
+            "Condition 2": pairs[k][1],
+            "n 1": sample_sizes[(panel, k)][0],
+            "n 2": sample_sizes[(panel, k)][1],
+            "Test": tests[i],
+            "Statistic": result.stat_value,
+            "p-value": raw_pvalues[(i, panel, k)],
+        }
+        if holm_correction is not None:
+            row["Holm p-value"] = result.pvalue
+        rows.append(row)
+    return annotations, pd.DataFrame(rows)
 
 
 def _annotate_significance(
@@ -650,16 +673,13 @@ def _plot_violinplot(
     ax: matplotlib.axes.Axes | np.ndarray,
     titles: list[str] | None,
     share_y_axis: bool,
-    plot_significance: bool,
-    significance_pairs: list[tuple] | None,
+    annotations: dict[int, tuple[list[tuple], list[str]]] | None,
     log_scale: bool,
     show_metric: bool = False,
     test: str | list[str] = "Mann-Whitney",
     show_swarm: bool = True,
     inner: str | None = "box",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
-    custom_annotations: dict[int, tuple[list[tuple], list[str]]] | None = None,
-    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
 ) -> tuple[list[float], list[float]]:
     """
     Draw violin + swarm subplots for each ordering group.
@@ -674,26 +694,21 @@ def _plot_violinplot(
             by ``_setup_figure``.
         titles (list[str] or None) : Subplot titles.
         share_y_axis (bool) : If ``True``, hide y-axis ticks on all but the first subplot.
-        plot_significance (bool) : If ``True``, add significance brackets.
-        significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
+        annotations (dict or None) : Significance brackets per ``"Order"`` value,
+            as ``(pairs, texts)``, from ``_compute_significance_annotations``;
+            groups without an entry or without pairs get no brackets.  ``None``
+            draws neither brackets nor metrics.
         log_scale (bool) : Passed to ``_add_metric_text`` for back-transformation.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
             Defaults to ``False``.
-        test (str or list[str]) : Statistical test for significance annotation, or
-            several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
+        test (str or list[str]) : Statistical test(s) the annotations come from;
+            selects the metrics shown.  Defaults to ``"Mann-Whitney"``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the violin plot.
             Defaults to ``True``.
         inner (str or None) : Passed to seaborn violinplot ``inner`` parameter. Defaults to ``None``.
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
-        custom_annotations (dict or None) : Precomputed brackets per ``"Order"``
-            value, as ``(pairs, texts)``.  When given, these are drawn instead of
-            running ``test``; groups without an entry or without pairs get no
-            brackets.  Defaults to ``None``.
-        holm_correction (str or None) : Holm family passed to
-            ``_compute_significance_annotations``; ignored with
-            ``custom_annotations``.  Defaults to ``"pair"``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -701,10 +716,6 @@ def _plot_violinplot(
     shown_df = df.copy()
     if display_transform is not None:
         shown_df[column] = display_transform(df[column].to_numpy())
-    if plot_significance and custom_annotations is None:
-        custom_annotations = _compute_significance_annotations(
-            df, conditions_to_plot, column, significance_pairs, test, holm_correction
-        )
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -762,7 +773,7 @@ def _plot_violinplot(
             axis="x", which="both", bottom=False, top=False, labelbottom=False
         )
 
-        if plot_significance:
+        if annotations is not None:
             # metrics first: they lower the y limit, which would squeeze brackets
             if show_metric:
                 _add_metric_text(
@@ -775,7 +786,7 @@ def _plot_violinplot(
                     test=test,
                     display_transform=display_transform,
                 )
-            pairs, texts = custom_annotations.get(event_index, ([], []))
+            pairs, texts = annotations.get(event_index, ([], []))
             if pairs:
                 _annotate_significance(
                     conditions_to_plot,
@@ -803,15 +814,12 @@ def _plot_boxplot(
     ax: matplotlib.axes.Axes | np.ndarray,
     titles: list[str] | None,
     share_y_axis: bool,
-    plot_significance: bool,
-    significance_pairs: list[tuple] | None,
+    annotations: dict[int, tuple[list[tuple], list[str]]] | None,
     log_scale: bool,
     show_metric: bool = False,
     show_swarm: bool = True,
     test: str | list[str] = "Mann-Whitney",
-    return_data: bool = False,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
-    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
 ) -> tuple[list[float], list[float]]:
     """
     Draw box + swarm subplots for each ordering group.
@@ -826,22 +834,20 @@ def _plot_boxplot(
             by ``_setup_figure``.
         titles (list[str] or None) : Subplot titles.
         share_y_axis (bool) : If ``True``, hide y-axis ticks on all but the first subplot.
-        plot_significance (bool) : If ``True``, add significance brackets.
-        significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
+        annotations (dict or None) : Significance brackets per ``"Order"`` value,
+            as ``(pairs, texts)``, from ``_compute_significance_annotations``;
+            groups without an entry or without pairs get no brackets.  ``None``
+            draws neither brackets nor metrics.
         log_scale (bool) : Passed to seaborn and ``_add_metric_text`` for log-scale handling.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the box plot.
             Defaults to ``True``.
-        test (str or list[str]) : Statistical test for significance annotation, or
-            several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
-        return_data (bool) : Unused; reserved for future use.  Defaults to ``False``.
+        test (str or list[str]) : Statistical test(s) the annotations come from;
+            selects the metrics shown.  Defaults to ``"Mann-Whitney"``.
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
-        holm_correction (str or None) : Holm family passed to
-            ``_compute_significance_annotations``; ``None`` shows the raw p-values.
-            Defaults to ``"pair"``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -849,10 +855,6 @@ def _plot_boxplot(
     shown_df = df.copy()
     if display_transform is not None:
         shown_df[column] = display_transform(df[column].to_numpy())
-    if plot_significance:
-        annotations = _compute_significance_annotations(
-            df, conditions_to_plot, column, significance_pairs, test, holm_correction
-        )
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -912,7 +914,7 @@ def _plot_boxplot(
             axis="x", which="both", bottom=False, top=False, labelbottom=False
         )
 
-        if plot_significance:
+        if annotations is not None:
             # metrics first: they lower the y limit, which would squeeze brackets
             if show_metric:
                 _add_metric_text(
@@ -925,16 +927,17 @@ def _plot_boxplot(
                     test=test,
                     display_transform=display_transform,
                 )
-            pairs, texts = annotations[event_index]
-            _annotate_significance(
-                conditions_to_plot,
-                column,
-                boxplot,
-                pairs,
-                texts,
-                event_index,
-                shown_df,
-            )
+            pairs, texts = annotations.get(event_index, ([], []))
+            if pairs:
+                _annotate_significance(
+                    conditions_to_plot,
+                    column,
+                    boxplot,
+                    pairs,
+                    texts,
+                    event_index,
+                    shown_df,
+                )
 
         min_y, max_y = current_ax.get_ylim()
         y_min.append(min_y)
@@ -951,13 +954,11 @@ def _plot_swarmplot(
     ax: matplotlib.axes.Axes | np.ndarray,
     titles: list[str] | None,
     share_y_axis: bool,
-    plot_significance: bool,
-    significance_pairs: list[tuple] | None,
+    annotations: dict[int, tuple[list[tuple], list[str]]] | None,
     log_scale: bool,
     show_metric: bool = False,
     test: str | list[str] = "Mann-Whitney",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
-    holm_correction: Literal["panel", "pair", "figure"] | None = "pair",
 ) -> tuple[list[float], list[float]]:
     """
     Draw swarm subplots, colored by condition, for each ordering group.
@@ -972,20 +973,19 @@ def _plot_swarmplot(
             by ``_setup_figure``.
         titles (list[str] or None) : Subplot titles.
         share_y_axis (bool) : If ``True``, hide y-axis ticks on all but the first subplot.
-        plot_significance (bool) : If ``True``, add significance brackets.
-        significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
+        annotations (dict or None) : Significance brackets per ``"Order"`` value,
+            as ``(pairs, texts)``, from ``_compute_significance_annotations``;
+            groups without an entry or without pairs get no brackets.  ``None``
+            draws neither brackets nor metrics.
         log_scale (bool) : If ``True``, use a log y axis; also passed to
             ``_add_metric_text``.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
             Defaults to ``False``.
-        test (str or list[str]) : Statistical test for significance annotation, or
-            several tests stacked on each bracket.  Defaults to ``"Mann-Whitney"``.
+        test (str or list[str]) : Statistical test(s) the annotations come from;
+            selects the metrics shown.  Defaults to ``"Mann-Whitney"``.
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
-        holm_correction (str or None) : Holm family passed to
-            ``_compute_significance_annotations``; ``None`` shows the raw p-values.
-            Defaults to ``"pair"``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -993,10 +993,6 @@ def _plot_swarmplot(
     shown_df = df.copy()
     if display_transform is not None:
         shown_df[column] = display_transform(df[column].to_numpy())
-    if plot_significance:
-        annotations = _compute_significance_annotations(
-            df, conditions_to_plot, column, significance_pairs, test, holm_correction
-        )
     y_min, y_max = [], []
     for event_index in range(df["Order"].nunique()):
         if share_y_axis:
@@ -1041,7 +1037,7 @@ def _plot_swarmplot(
             axis="x", which="both", bottom=False, top=False, labelbottom=False
         )
 
-        if plot_significance:
+        if annotations is not None:
             # metrics first: they lower the y limit, which would squeeze brackets
             if show_metric:
                 _add_metric_text(
@@ -1054,17 +1050,18 @@ def _plot_swarmplot(
                     test=test,
                     display_transform=display_transform,
                 )
-            pairs, texts = annotations[event_index]
-            _annotate_significance(
-                conditions_to_plot,
-                column,
-                swarmplot,
-                pairs,
-                texts,
-                event_index,
-                shown_df,
-                plot_type="swarmplot",
-            )
+            pairs, texts = annotations.get(event_index, ([], []))
+            if pairs:
+                _annotate_significance(
+                    conditions_to_plot,
+                    column,
+                    swarmplot,
+                    pairs,
+                    texts,
+                    event_index,
+                    shown_df,
+                    plot_type="swarmplot",
+                )
 
         min_y, max_y = current_ax.get_ylim()
         y_min.append(min_y)
@@ -1077,8 +1074,8 @@ def _swarm_dot_size(df: pd.DataFrame, event_index: int, column: str) -> float:
     """
     Compute a dot size for swarm plots that shrinks as sample count grows.
 
-    Uses ``max(3, 6 * sqrt(20 / max(20, n_max)))`` so dots stay at 6 pt up to
-    20 points and decay smoothly above that, flooring at 1 pt.
+    Uses ``max(1.5, 6 * sqrt(20 / max(20, n_max)))`` so dots stay at 6 pt up to
+    20 points and decay smoothly above that, flooring at 1.5 pt.
 
     Parameters:
         df (pandas.DataFrame) : Full data DataFrame with ``"Order"`` and ``"Condition"`` columns.
@@ -1093,7 +1090,7 @@ def _swarm_dot_size(df: pd.DataFrame, event_index: int, column: str) -> float:
         event_data.groupby("Condition")[column].apply(lambda s: s.notna().sum()).max()
     )
     n_max = max(20, int(n_max))
-    return max(1.0, 6.0 * (20.0 / n_max) ** 0.5)
+    return max(1.5, 6.0 * (20.0 / n_max) ** 0.5)
 
 
 def _worm_identity(condition_dict: dict, worm: int) -> dict:
@@ -1178,7 +1175,8 @@ def _build_larval_stage_dataframe(
 
     Returns:
         pandas.DataFrame: Columns ``"Condition"``, ``"Order"`` and ``"Event"`` (both
-        the stage index), ``"Point"``, ``"Filemap"`` and ``column``.
+        the stage index), ``"Description"``, ``"Point"``, ``"Filemap"`` and
+        ``column``.
     """
     data_list = []
     for condition_id in conditions_to_plot:
@@ -1204,6 +1202,7 @@ def _build_larval_stage_dataframe(
                         "Condition": condition_id,
                         "Order": i,
                         "Event": i,
+                        "Description": condition_dict["description"],
                         **_worm_identity(condition_dict, j),
                         column: aggregated_data_of_stage[j],
                     }
@@ -1231,42 +1230,81 @@ def _z_scores(df: pd.DataFrame, column: str) -> pd.Series:
 def _report_outliers(
     df: pd.DataFrame,
     column: str,
-    conditions_struct: list,
     n_std: float,
-) -> None:
+) -> pd.DataFrame:
     """
-    Print the points beyond ``n_std`` std of their population, grouped by filemap.
+    Print and return the points beyond ``n_std`` std of their population.
 
-    A population is one condition in one panel.
+    A population is one condition in one panel.  The points are printed grouped
+    by the filemap they come from.
 
     Parameters:
         df (pandas.DataFrame): Data with ``"Order"``, ``"Event"``, ``"Condition"``,
-            ``"Point"``, ``"Filemap"`` and ``column`` columns.
+            ``"Description"``, ``"Point"``, ``"Filemap"`` and ``column`` columns.
         column (str): Column holding the values.
-        conditions_struct (list): List of condition dicts, for the descriptions.
         n_std (float): Distance from the population mean, in standard deviations,
             beyond which a point is reported.
 
     Returns:
-        None
+        pandas.DataFrame: One row per outlier, sorted by filemap, point and event,
+        with columns ``"Filemap"``, ``"Point"``, ``"Condition"``,
+        ``"Description"``, ``"Event"``, ``column`` and ``"z"``, its signed
+        distance from the population mean in standard deviations.
     """
     z_scores = _z_scores(df, column)
-    outliers = df.loc[z_scores.abs() > n_std].assign(z=z_scores)
+    outliers = (
+        df.loc[z_scores.abs() > n_std]
+        .assign(z=z_scores)
+        .sort_values(["Filemap", "Point", "Event"], na_position="last")
+        .reset_index(drop=True)
+    )[["Filemap", "Point", "Condition", "Description", "Event", column, "z"]]
+
     print(f"\nPoints more than {n_std:g} std from their condition mean in '{column}':")
     if outliers.empty:
         print("  none")
-        return
+        return outliers
 
     filemaps = outliers["Filemap"].fillna("unknown filemap")
     for filemap, group in outliers.groupby(filemaps, sort=True):
         print(f"\n{filemap}")
-        for _, row in group.sort_values(["Point", "Event"]).iterrows():
-            description = conditions_struct[row["Condition"]].get("description", "")
+        for _, row in group.iterrows():
             print(
                 f"  Point {row['Point']}: condition {row['Condition']} "
-                f"({description}), event {row['Event']}, "
+                f"({row['Description']}), event {row['Event']}, "
                 f"value {row[column]:.4g}, z = {row['z']:+.2f}"
             )
+    return outliers
+
+
+def _build_report(
+    df: pd.DataFrame,
+    outliers: pd.DataFrame | None,
+    tests: pd.DataFrame | None,
+) -> dict:
+    """
+    Gather the data, outliers and test results behind a plot into one report.
+
+    Parameters:
+        df (pandas.DataFrame): Plotted data, one row per worm and panel, with
+            ``"Order"`` and ``"Event"`` columns.
+        outliers (pandas.DataFrame or None): Output of ``_report_outliers``.
+        tests (pandas.DataFrame or None): Test table returned by
+            ``_compute_significance_annotations``.
+
+    Returns:
+        dict: ``"data"``, the untransformed plotted values; ``"outliers"`` and
+        ``"tests"``, with the panel of each test given by its ``"Event"``, or
+        ``None`` when they were not computed.
+    """
+    if tests is not None:
+        events = df.groupby("Order")["Event"].first()
+        tests = tests.copy()
+        tests.insert(0, "Event", tests.pop("Order").map(events))
+    return {
+        "data": df.drop(columns="Order"),
+        "outliers": outliers,
+        "tests": tests,
+    }
 
 
 def _set_all_y_limits(ax: np.ndarray, y_min: list[float], y_max: list[float]) -> None:
@@ -1370,13 +1408,13 @@ def violinplot(
     titles: list[str] | None = None,
     share_y_axis: bool = False,
     show_swarm: bool = True,
-    return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
-) -> matplotlib.figure.Figure:
+    return_report: bool = False,
+) -> matplotlib.figure.Figure | tuple[matplotlib.figure.Figure, dict]:
     """
     Create violin plots for a per-molt measurement across conditions.
 
@@ -1422,8 +1460,6 @@ def violinplot(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the violin plot.
             Defaults to ``True``.
-        return_data (bool) : If ``True``, also return the intermediate DataFrame.
-            Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
@@ -1431,7 +1467,8 @@ def violinplot(
             is ignored.  Defaults to ``False``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
-            with its point and value, grouped by the filemap it comes from.
+            with its point and value, grouped by the filemap it comes from, and
+            add them to the report.
             Defaults to ``False``.
         outlier_threshold (float) : Distance from the population mean, in standard
             deviations, beyond which ``report_outliers`` prints a point.
@@ -1442,11 +1479,20 @@ def violinplot(
             and spread metrics use the untransformed values; mean and median
             metrics are computed on them and then transformed.
             Defaults to ``None``.
+        return_report (bool) : If ``True``, also return a report of the data,
+            outliers and test results behind the plot.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
-        tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
-            ``return_data=True``; the DataFrame holds the untransformed values.
+        tuple[matplotlib.figure.Figure, dict] : Figure and report if
+            ``return_report=True``.  The report holds ``"data"``, a DataFrame of
+            the untransformed plotted values with their ``"Condition"``,
+            ``"Event"``, ``"Point"`` and ``"Filemap"``; ``"outliers"``, the
+            points found by ``report_outliers`` with their distance ``"z"`` from
+            their condition mean in std, or ``None`` without it; and
+            ``"tests"``, one row per event, pair and test with sample sizes,
+            statistic, p-value and, with ``holm_correction``, Holm p-value, or
+            ``None`` without ``plot_significance``.
     """
 
     color_palette = get_colors(
@@ -1457,8 +1503,19 @@ def violinplot(
     df = _build_event_dataframe(
         conditions_struct, column, conditions_to_plot, events_to_plot
     )
-    if report_outliers:
-        _report_outliers(df, column, conditions_struct, outlier_threshold)
+    outliers = (
+        _report_outliers(df, column, outlier_threshold) if report_outliers else None
+    )
+    annotations, tests = None, None
+    if plot_significance:
+        annotations, tests = _compute_significance_annotations(
+            df,
+            conditions_to_plot,
+            column,
+            significance_pairs,
+            significance_test,
+            holm_correction,
+        )
 
     fig, ax = _setup_figure(
         df,
@@ -1475,13 +1532,11 @@ def violinplot(
         ax,
         titles,
         share_y_axis,
-        plot_significance,
-        significance_pairs,
+        annotations,
         log_scale=log_scale,
         show_metric=show_metric,
         show_swarm=show_swarm,
         test=significance_test,
-        holm_correction=holm_correction,
         display_transform=display_transform,
     )
 
@@ -1507,9 +1562,8 @@ def violinplot(
     fig = plt.gcf()
     plt.show()
 
-    if return_data:
-        return fig, df
-
+    if return_report:
+        return fig, _build_report(df, outliers, tests)
     return fig
 
 
@@ -1532,13 +1586,13 @@ def boxplot(
     titles: list[str] | None = None,
     share_y_axis: bool = False,
     show_swarm: bool = True,
-    return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
-) -> matplotlib.figure.Figure:
+    return_report: bool = False,
+) -> matplotlib.figure.Figure | tuple[matplotlib.figure.Figure, dict]:
     """
     Create box plots for a per-molt measurement across conditions.
 
@@ -1586,8 +1640,6 @@ def boxplot(
             Defaults to ``False``.
         show_swarm (bool) : If ``True``, overlay a swarm plot on the box plot.
             Defaults to ``True``.
-        return_data (bool) : If ``True``, also return the intermediate DataFrame.
-            Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
@@ -1595,7 +1647,8 @@ def boxplot(
             is ignored.  Defaults to ``False``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
-            with its point and value, grouped by the filemap it comes from.
+            with its point and value, grouped by the filemap it comes from, and
+            add them to the report.
             Defaults to ``False``.
         outlier_threshold (float) : Distance from the population mean, in standard
             deviations, beyond which ``report_outliers`` prints a point.
@@ -1606,11 +1659,20 @@ def boxplot(
             and spread metrics use the untransformed values; mean and median
             metrics are computed on them and then transformed.
             Defaults to ``None``.
+        return_report (bool) : If ``True``, also return a report of the data,
+            outliers and test results behind the plot.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
-        tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
-            ``return_data=True``; the DataFrame holds the untransformed values.
+        tuple[matplotlib.figure.Figure, dict] : Figure and report if
+            ``return_report=True``.  The report holds ``"data"``, a DataFrame of
+            the untransformed plotted values with their ``"Condition"``,
+            ``"Event"``, ``"Point"`` and ``"Filemap"``; ``"outliers"``, the
+            points found by ``report_outliers`` with their distance ``"z"`` from
+            their condition mean in std, or ``None`` without it; and
+            ``"tests"``, one row per event, pair and test with sample sizes,
+            statistic, p-value and, with ``holm_correction``, Holm p-value, or
+            ``None`` without ``plot_significance``.
     """
 
     color_palette = get_colors(
@@ -1621,8 +1683,19 @@ def boxplot(
     df = _build_event_dataframe(
         conditions_struct, column, conditions_to_plot, events_to_plot
     )
-    if report_outliers:
-        _report_outliers(df, column, conditions_struct, outlier_threshold)
+    outliers = (
+        _report_outliers(df, column, outlier_threshold) if report_outliers else None
+    )
+    annotations, tests = None, None
+    if plot_significance:
+        annotations, tests = _compute_significance_annotations(
+            df,
+            conditions_to_plot,
+            column,
+            significance_pairs,
+            significance_test,
+            holm_correction,
+        )
 
     fig, ax = _setup_figure(
         df,
@@ -1639,13 +1712,11 @@ def boxplot(
         ax,
         titles,
         share_y_axis,
-        plot_significance,
-        significance_pairs,
+        annotations,
         show_swarm=show_swarm,
         log_scale=log_scale,
         show_metric=show_metric,
         test=significance_test,
-        holm_correction=holm_correction,
         display_transform=display_transform,
     )
 
@@ -1671,9 +1742,8 @@ def boxplot(
     fig = plt.gcf()
     plt.show()
 
-    if return_data:
-        return fig, df
-
+    if return_report:
+        return fig, _build_report(df, outliers, tests)
     return fig
 
 
@@ -1695,13 +1765,13 @@ def swarmplot(
     y_axis_label: str | None = None,
     titles: list[str] | None = None,
     share_y_axis: bool = False,
-    return_data: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
-) -> matplotlib.figure.Figure:
+    return_report: bool = False,
+) -> matplotlib.figure.Figure | tuple[matplotlib.figure.Figure, dict]:
     """
     Create swarm plots for a per-molt measurement across conditions.
 
@@ -1746,8 +1816,6 @@ def swarmplot(
         titles (list[str] or None) : Subplot titles.  Defaults to ``None``.
         share_y_axis (bool) : If ``True``, synchronise y-axis limits.
             Defaults to ``False``.
-        return_data (bool) : If ``True``, also return the intermediate DataFrame.
-            Defaults to ``False``.
         legend_placement (str or None) : Figure legend placement passed to
             ``add_legend``; ``None`` hides the legend.  Defaults to ``"outside right"``.
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
@@ -1755,7 +1823,8 @@ def swarmplot(
             ignored.  Defaults to ``False``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
-            with its point and value, grouped by the filemap it comes from.
+            with its point and value, grouped by the filemap it comes from, and
+            add them to the report.
             Defaults to ``False``.
         outlier_threshold (float) : Distance from the population mean, in standard
             deviations, beyond which ``report_outliers`` prints a point.
@@ -1766,11 +1835,20 @@ def swarmplot(
             and spread metrics use the untransformed values; mean and median
             metrics are computed on them and then transformed.
             Defaults to ``None``.
+        return_report (bool) : If ``True``, also return a report of the data,
+            outliers and test results behind the plot.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
-        tuple[matplotlib.figure.Figure, pandas.DataFrame] : Figure and DataFrame if
-            ``return_data=True``; the DataFrame holds the untransformed values.
+        tuple[matplotlib.figure.Figure, dict] : Figure and report if
+            ``return_report=True``.  The report holds ``"data"``, a DataFrame of
+            the untransformed plotted values with their ``"Condition"``,
+            ``"Event"``, ``"Point"`` and ``"Filemap"``; ``"outliers"``, the
+            points found by ``report_outliers`` with their distance ``"z"`` from
+            their condition mean in std, or ``None`` without it; and
+            ``"tests"``, one row per event, pair and test with sample sizes,
+            statistic, p-value and, with ``holm_correction``, Holm p-value, or
+            ``None`` without ``plot_significance``.
     """
 
     color_palette = get_colors(
@@ -1781,8 +1859,19 @@ def swarmplot(
     df = _build_event_dataframe(
         conditions_struct, column, conditions_to_plot, events_to_plot
     )
-    if report_outliers:
-        _report_outliers(df, column, conditions_struct, outlier_threshold)
+    outliers = (
+        _report_outliers(df, column, outlier_threshold) if report_outliers else None
+    )
+    annotations, tests = None, None
+    if plot_significance:
+        annotations, tests = _compute_significance_annotations(
+            df,
+            conditions_to_plot,
+            column,
+            significance_pairs,
+            significance_test,
+            holm_correction,
+        )
 
     fig, ax = _setup_figure(
         df,
@@ -1799,12 +1888,10 @@ def swarmplot(
         ax,
         titles,
         share_y_axis,
-        plot_significance,
-        significance_pairs,
+        annotations,
         log_scale=log_scale,
         show_metric=show_metric,
         test=significance_test,
-        holm_correction=holm_correction,
         display_transform=display_transform,
     )
 
@@ -1829,9 +1916,8 @@ def swarmplot(
     fig = plt.gcf()
     plt.show()
 
-    if return_data:
-        return fig, df
-
+    if return_report:
+        return fig, _build_report(df, outliers, tests)
     return fig
 
 
@@ -1860,7 +1946,8 @@ def violinplot_larval_stage(
     legend_as_xticks: bool = False,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
-) -> matplotlib.figure.Figure:
+    return_report: bool = False,
+) -> matplotlib.figure.Figure | tuple[matplotlib.figure.Figure, dict]:
     """
     Create violin plots with per-worm values aggregated within a fraction of each larval stage.
 
@@ -1919,14 +2006,20 @@ def violinplot_larval_stage(
             is ignored.  Defaults to ``False``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
-            with its point and value, grouped by the filemap it comes from.
+            with its point and value, grouped by the filemap it comes from, and
+            add them to the report.
             Defaults to ``False``.
         outlier_threshold (float) : Distance from the population mean, in standard
             deviations, beyond which ``report_outliers`` prints a point.
             Defaults to ``2.0``.
+        return_report (bool) : If ``True``, also return a report of the data,
+            outliers and test results behind the plot.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
+        tuple[matplotlib.figure.Figure, dict] : Figure and report if
+            ``return_report=True``, as returned by ``violinplot``; the
+            ``"Event"`` of a row is its larval stage index.
     """
     color_palette = get_colors(
         conditions_to_plot,
@@ -1943,8 +2036,19 @@ def violinplot_larval_stage(
     df = _build_larval_stage_dataframe(
         conditions_struct, column, conditions_to_plot, aggregation, fraction
     )
-    if report_outliers:
-        _report_outliers(df, column, conditions_struct, outlier_threshold)
+    outliers = (
+        _report_outliers(df, column, outlier_threshold) if report_outliers else None
+    )
+    annotations, tests = None, None
+    if plot_significance:
+        annotations, tests = _compute_significance_annotations(
+            df,
+            conditions_to_plot,
+            column,
+            significance_pairs,
+            significance_test,
+            holm_correction,
+        )
 
     fig, ax = _setup_figure(
         df,
@@ -1961,13 +2065,11 @@ def violinplot_larval_stage(
         ax,
         titles,
         share_y_axis,
-        plot_significance,
-        significance_pairs,
+        annotations,
         log_scale=log_scale,
         show_metric=show_metric,
         show_swarm=show_swarm,
         test=significance_test,
-        holm_correction=holm_correction,
     )
 
     _set_labels_and_legend(
@@ -1988,6 +2090,8 @@ def violinplot_larval_stage(
     fig = plt.gcf()
     plt.show()
 
+    if return_report:
+        return fig, _build_report(df, outliers, tests)
     return fig
 
 
@@ -2016,7 +2120,8 @@ def boxplot_larval_stage(
     legend_as_xticks: bool = False,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
-) -> matplotlib.figure.Figure:
+    return_report: bool = False,
+) -> matplotlib.figure.Figure | tuple[matplotlib.figure.Figure, dict]:
     """
     Create box plots with per-worm values aggregated within a fraction of each larval stage.
 
@@ -2074,14 +2179,20 @@ def boxplot_larval_stage(
             is ignored.  Defaults to ``False``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
-            with its point and value, grouped by the filemap it comes from.
+            with its point and value, grouped by the filemap it comes from, and
+            add them to the report.
             Defaults to ``False``.
         outlier_threshold (float) : Distance from the population mean, in standard
             deviations, beyond which ``report_outliers`` prints a point.
             Defaults to ``2.0``.
+        return_report (bool) : If ``True``, also return a report of the data,
+            outliers and test results behind the plot.  Defaults to ``False``.
 
     Returns:
         matplotlib.figure.Figure : The generated figure.
+        tuple[matplotlib.figure.Figure, dict] : Figure and report if
+            ``return_report=True``, as returned by ``violinplot``; the
+            ``"Event"`` of a row is its larval stage index.
     """
     color_palette = get_colors(
         conditions_to_plot,
@@ -2098,8 +2209,19 @@ def boxplot_larval_stage(
     df = _build_larval_stage_dataframe(
         conditions_struct, column, conditions_to_plot, aggregation, fraction
     )
-    if report_outliers:
-        _report_outliers(df, column, conditions_struct, outlier_threshold)
+    outliers = (
+        _report_outliers(df, column, outlier_threshold) if report_outliers else None
+    )
+    annotations, tests = None, None
+    if plot_significance:
+        annotations, tests = _compute_significance_annotations(
+            df,
+            conditions_to_plot,
+            column,
+            significance_pairs,
+            significance_test,
+            holm_correction,
+        )
 
     fig, ax = _setup_figure(
         df,
@@ -2116,13 +2238,11 @@ def boxplot_larval_stage(
         ax,
         titles,
         share_y_axis,
-        plot_significance,
-        significance_pairs,
+        annotations,
         log_scale=log_scale,
         show_metric=show_metric,
         show_swarm=show_swarm,
         test=significance_test,
-        holm_correction=holm_correction,
     )
 
     _set_labels_and_legend(
@@ -2143,4 +2263,6 @@ def boxplot_larval_stage(
     fig = plt.gcf()
     plt.show()
 
+    if return_report:
+        return fig, _build_report(df, outliers, tests)
     return fig

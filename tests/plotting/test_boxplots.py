@@ -67,19 +67,28 @@ def test_brown_forsythe_detects_different_spreads_not_different_centers():
     "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
 )
 def test_event_plots_draw_one_panel_per_event(conditions_struct, plot_function):
-    fig, data = plot_function(
+    fig, report = plot_function(
         conditions_struct,
         "body_seg_volume_at_ecdysis",
         [0, 1],
         events_to_plot=[1, 2, 3],
         titles=["M1", "M2", "M3"],
-        return_data=True,
+        return_report=True,
     )
     assert isinstance(fig, matplotlib.figure.Figure)
     assert len(fig.axes) == 3
     assert [ax.get_title() for ax in fig.axes] == ["M1", "M2", "M3"]
+    data = report["data"]
     assert len(data) == 2 * 30 * 3
-    assert set(data["Order"]) == {0, 1, 2}
+    assert set(data["Event"]) == {1, 2, 3}
+    worm_values = data[(data["Condition"] == 1) & (data["Event"] == 2)]
+    np.testing.assert_array_equal(
+        worm_values["body_seg_volume_at_ecdysis"],
+        conditions_struct[1]["body_seg_volume_at_ecdysis"][:, 2],
+    )
+    np.testing.assert_array_equal(worm_values["Point"], np.arange(30) + 10)
+    assert report["outliers"] is None
+    assert report["tests"] is None
     assert [t.get_text() for t in fig.legends[0].get_texts()] == [
         "Condition 0",
         "Condition 1",
@@ -222,10 +231,10 @@ def test_display_transform_changes_drawn_values_not_tests(
         log_scale=False,
         plot_significance=True,
         significance_test="Levene",
-        return_data=True,
+        return_report=True,
     )
     raw_fig, _ = plot_function(conditions_struct, "log_dev", [0, 1], **kwargs)
-    fig, data = plot_function(
+    fig, report = plot_function(
         conditions_struct,
         "log_dev",
         [0, 1],
@@ -233,7 +242,7 @@ def test_display_transform_changes_drawn_values_not_tests(
         **kwargs,
     )
 
-    np.testing.assert_array_equal(data["log_dev"], np.concatenate(log_values))
+    np.testing.assert_array_equal(report["data"]["log_dev"], np.concatenate(log_values))
     swarm = np.concatenate(
         [
             c.get_offsets()[:, 1]
@@ -330,7 +339,7 @@ def test_holm_correction_adjusts_shown_p_values_within_family(plot_function, fam
         "figure": _holm(raw.ravel()).reshape(raw.shape),
     }[family]
 
-    fig = plot_function(
+    fig, report = plot_function(
         conditions_struct,
         "value",
         [0, 1, 2],
@@ -339,10 +348,21 @@ def test_holm_correction_adjusts_shown_p_values_within_family(plot_function, fam
         significance_test="Levene",
         holm_correction=family,
         legend={"description": ""},
+        return_report=True,
     )
     for ax, expected_panel in zip(fig.axes, expected, strict=True):
         shown = [float(t.get_text().split("=")[1]) for t in ax.texts]
         np.testing.assert_allclose(np.sort(shown), np.sort(expected_panel), atol=0.005)
+
+    tests = report["tests"]
+    assert list(tests["Event"]) == [0, 0, 0, 1, 1, 1]
+    assert list(zip(tests["Condition 1"], tests["Condition 2"])) == pairs * 2
+    assert (tests[["n 1", "n 2"]] == 25).all(axis=None)
+    np.testing.assert_allclose(tests["p-value"], raw.ravel())
+    if family is None:
+        assert "Holm p-value" not in tests
+    else:
+        np.testing.assert_allclose(tests["Holm p-value"], expected.ravel())
 
 
 def test_unknown_holm_family_raises_value_error(conditions_struct):
@@ -418,3 +438,29 @@ def test_report_outliers_groups_points_by_filemap(
         elif line.startswith("  Point"):
             reported[filemap].append(line.split(":")[0].strip())
     assert reported == expected
+
+
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
+def test_report_lists_outliers_with_their_filemap_and_distance(
+    outlier_struct, plot_function
+):
+    _, report = plot_function(
+        outlier_struct,
+        "custom",
+        [0, 1],
+        log_scale=False,
+        report_outliers=True,
+        outlier_threshold=2.0,
+        return_report=True,
+    )
+    outliers = report["outliers"]
+    assert list(outliers["Filemap"]) == ["a.csv", "a.csv", "b.csv"]
+    assert list(outliers["Point"]) == [3, 7, 20]
+    assert list(outliers["Event"]) == [0, 1, 0]
+    assert (outliers["Condition"] == 0).all()
+    assert (outliers["custom"] == 100).all()
+    # 28 ones and two 100s: mean 7.6, std 25.1; one 100 among 29 ones: mean 4.3,
+    # std 18.1
+    np.testing.assert_allclose(outliers["z"], [3.68, 5.30, 3.68], atol=0.01)

@@ -1953,12 +1953,10 @@ def plot_timepoint_dispersion(
         axes if len(axes) > 1 else axes[0],
         titles=[title_of[timepoint] for timepoint in timepoints],
         share_y_axis=False,
-        plot_significance=True,
-        significance_pairs=None,
+        annotations=annotations,
         log_scale=False,
         show_swarm=show_swarm,
         display_transform=log_ratio_to_percentage,
-        custom_annotations=annotations,
     )
     axes[0].set_ylabel("Residual around own curve (%)" if y_label is None else y_label)
 
