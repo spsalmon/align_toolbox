@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from csbdeep.utils import normalize
+from skimage.filters import scharr
 from skimage.measure import regionprops_table
 from skimage.measure._regionprops import RegionProperties
 
@@ -67,8 +68,11 @@ def compute_qc_features(
     Compute quality-control features from a mask and an optional intensity image.
 
     Accepts file paths or NumPy arrays for both ``mask`` and ``image``. Computes
-    scikit-image region properties for the largest foreground object, plus a
-    normalized-variance focus measure when an intensity image is provided. Size
+    scikit-image region properties for the largest foreground object. When an
+    intensity image is provided, also computes a normalized-variance focus measure
+    and the requested ``intensity_*`` properties on the Scharr edge magnitude of
+    each channel, which drops as the image gets blurrier, both inside the mask
+    (prefixed ``scharr_mask_``) and over the whole image (``scharr_image_``). Size
     properties are expressed in µm (lengths), µm² (areas) and so on, so that
     features from microscopes with different pixel sizes are comparable.
 
@@ -118,16 +122,36 @@ def compute_qc_features(
             if image.shape[-2:] != mask.shape[-2:]:
                 image, mask = pad_images_to_same_dim(image, mask)
 
+            # per channel, as scharr would otherwise also smooth across channels
+            edges = np.stack(
+                [scharr(plane) for plane in image.reshape(-1, *image.shape[-2:])]
+            )
+            edges = edges.reshape(image.shape)
+
             if image.ndim == 3:
                 image = np.transpose(image, (1, 2, 0))
+                edges = np.transpose(edges, (1, 2, 0))
 
             props_df = _compute_regionprops(mask, image, pixelsize, features)
+            edge_features = [f for f in features if f.startswith("intensity_")]
+            edge_props_df = pd.concat(
+                [
+                    _compute_regionprops(
+                        region, edges, pixelsize, edge_features
+                    ).add_prefix(prefix)
+                    for region, prefix in (
+                        (mask, "scharr_mask_"),
+                        (np.ones_like(mask), "scharr_image_"),
+                    )
+                ],
+                axis=1,
+            )
             other_features = {
                 "NORMALIZED_VARIANCE_MEASURE": normalized_variance_measure(image),
             }
 
             other_features_df = pd.DataFrame([other_features])
-            props_df = pd.concat([props_df, other_features_df], axis=1)
+            props_df = pd.concat([props_df, edge_props_df, other_features_df], axis=1)
         else:
             props_df = _compute_regionprops(mask, None, pixelsize, features)
         return props_df

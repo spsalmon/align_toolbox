@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from scipy.ndimage import gaussian_filter
 from tifffile import imwrite
 
 from align_toolbox.classification import compute_qc_features
@@ -32,9 +33,25 @@ def test_compute_qc_features_with_image(curved_worm_mask, curved_worm_image):
     assert list(features.columns) == [
         "area",
         "intensity_mean",
+        "scharr_mask_intensity_mean",
+        "scharr_image_intensity_mean",
         "NORMALIZED_VARIANCE_MEASURE",
     ]
     assert features["intensity_mean"][0] > 0.5  # worm pixels are the bright ones
+
+
+def test_compute_qc_features_scharr_response_drops_with_blur(
+    curved_worm_mask, curved_worm_image
+):
+    sharp, blurred = (
+        compute_qc_features(
+            curved_worm_mask, image, pixelsize=1.0, features=["intensity_mean"]
+        )
+        for image in (curved_worm_image, gaussian_filter(curved_worm_image, 3))
+    )
+    for region in ("mask", "image"):
+        column = f"scharr_{region}_intensity_mean"
+        assert sharp[column][0] > blurred[column][0]
 
 
 def test_compute_qc_features_reads_paths_and_multichannel_images(
@@ -51,6 +68,9 @@ def test_compute_qc_features_reads_paths_and_multichannel_images(
     )
     assert features["area"][0] == curved_worm_mask.sum()
     assert {"intensity_mean-0", "intensity_mean-1"} <= set(features.columns)
+    assert features["scharr_image_intensity_mean-0"][0] == pytest.approx(
+        features["scharr_image_intensity_mean-1"][0]
+    )
 
 
 def test_compute_qc_features_pads_mismatched_shapes(
