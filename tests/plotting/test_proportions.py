@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from scipy import stats
 
 from align_toolbox.plotting import proportions
 
@@ -145,7 +146,7 @@ def test_plot_deviation_from_model_at_ecdysis_shows_ten_percent(
     np.testing.assert_allclose(longer.get_ydata(), 10, atol=1e-6)
 
 
-def test_plot_deviation_percent_summary_is_back_transformed_log_mean(
+def test_plot_deviation_percent_summary_is_back_transformed_log_median(
     conditions_struct,
 ):
     rng = np.random.default_rng(1)
@@ -160,21 +161,23 @@ def test_plot_deviation_percent_summary_is_back_transformed_log_mean(
         output_column_name="dev",
         remove_hatch=False,
     )[1]["dev"]
-    log_mean = log_deviations.mean(axis=0)
-    log_ste = log_deviations.std(axis=0) / np.sqrt(log_deviations.shape[0])
+    log_median = np.median(log_deviations, axis=0)
+    log_cis = [
+        stats.quantile_test(column, p=0.5).confidence_interval(0.95)
+        for column in log_deviations.T
+    ]
 
     fig = proportions.plot_deviation_from_model_at_ecdysis(
         conditions_struct, *COLUMNS, 0, [1], log_scale=False
     )
     (line,) = _mean_lines(fig)
-    np.testing.assert_allclose(line.get_ydata(), np.expm1(log_mean) * 100)
+    np.testing.assert_allclose(line.get_ydata(), np.expm1(log_median) * 100)
     (error_bars,) = fig.axes[0].collections
     lower, upper = np.array([segment[:, 1] for segment in error_bars.get_segments()]).T
-    np.testing.assert_allclose(lower, np.expm1(log_mean - log_ste) * 100)
-    np.testing.assert_allclose(upper, np.expm1(log_mean + log_ste) * 100)
-    # exp is convex, so the upper arm is always the longer one
+    np.testing.assert_allclose(lower, np.expm1([ci.low for ci in log_cis]) * 100)
+    np.testing.assert_allclose(upper, np.expm1([ci.high for ci in log_cis]) * 100)
     center = line.get_ydata()
-    assert (upper - center > center - lower).all()
+    assert (lower <= center).all() and (center <= upper).all()
     assert fig.axes[0].get_ylabel().endswith("(%)")
 
 
@@ -216,3 +219,23 @@ def test_plot_normalized_proportions_at_ecdysis(conditions_struct):
     np.testing.assert_allclose(control.get_ydata(), 1)
     # worm sizes differ between conditions, so the ratio is only close to 1.1
     np.testing.assert_allclose(longer.get_ydata(), 1.1, rtol=0.05)
+
+
+def test_summarize_log_deviations_median_ci_matches_scipy_and_handles_nans():
+    rng = np.random.default_rng(2)
+    log_deviations = rng.normal(0, 0.2, (30, 4))
+    log_deviations[:12, 1] = np.nan  # 18 valid values
+    log_deviations[:26, 2] = np.nan  # 4 valid values: too few for a 95% interval
+    log_deviations[:, 3] = np.nan  # empty column
+
+    center, lower, upper = proportions._summarize_log_deviations(log_deviations, "log")
+
+    for column in (0, 1):
+        values = log_deviations[:, column]
+        values = values[~np.isnan(values)]
+        ci = stats.quantile_test(values, p=0.5).confidence_interval(0.95)
+        assert center[column] == pytest.approx(np.median(values))
+        assert (lower[column], upper[column]) == pytest.approx((ci.low, ci.high))
+    assert center[2] == pytest.approx(np.nanmedian(log_deviations[:, 2]))
+    assert np.isnan(lower[2:]).all() and np.isnan(upper[2:]).all()
+    assert np.isnan(center[3])

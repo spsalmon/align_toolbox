@@ -112,34 +112,58 @@ def _resolve_deviation_scale(
 def _summarize_log_deviations(
     log_deviations: np.ndarray,
     display_scale: str,
-    n_standard_errors: float = 1.0,
+    confidence_level: float = 0.95,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Summarize log-ratio deviations per column as a center and an error interval.
+    Summarize log-ratio deviations per column as a median and its confidence interval.
 
-    The mean and standard error are always computed on the log scale. For
-    ``"percent"`` display, the center and bounds are back-transformed with
-    ``(exp(x) - 1) * 100``, which gives a geometric-mean-based relative deviation
-    with asymmetric bounds.
+    The interval is the exact, distribution-free order-statistic interval of the
+    median: with ``n`` non-NaN values sorted as ``x_(1) <= ... <= x_(n)``, it is
+    ``[x_(k), x_(n - k + 1)]`` with ``k`` the largest rank such that
+    ``P(B <= k - 1) <= (1 - confidence_level) / 2`` for ``B ~ Binomial(n, 0.5)``,
+    so its coverage is at least ``confidence_level``. Columns with too few values
+    to reach that coverage (fewer than 6 at 95%) get NaN bounds.
+
+    The median and order statistics commute with the monotonic back-transform, so
+    for ``"percent"`` display, ``(exp(x) - 1) * 100`` of the log-scale summary is
+    exactly the median percent deviation and its interval, with asymmetric bounds.
 
     Parameters:
         log_deviations (np.ndarray): Log-ratio deviations of shape
             ``(n_worms, n_points)``; NaN values are ignored.
         display_scale (str): ``"log"`` or ``"percent"``.
-        n_standard_errors (float): Half-width of the interval in standard errors.
-            (default: 1.0)
+        confidence_level (float): Minimum coverage of the median's interval.
+            (default: 0.95)
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray]: Center, lower bound and upper
+        tuple[np.ndarray, np.ndarray, np.ndarray]: Median, lower bound and upper
             bound, each of shape ``(n_points,)``, in the display scale.
     """
-    mean = np.nanmean(log_deviations, axis=0)
-    ste = np.nanstd(log_deviations, axis=0) / np.sqrt(
-        np.sum(~np.isnan(log_deviations), axis=0)
-    )
-    center = mean
-    lower = mean - n_standard_errors * ste
-    upper = mean + n_standard_errors * ste
+    log_deviations = np.asarray(log_deviations, dtype=float)
+    median = np.nanmedian(log_deviations, axis=0)
+
+    # NaNs sort to the end of each column, so ranks 1..n index the valid values
+    sorted_deviations = np.sort(log_deviations, axis=0)
+    n_valid = np.sum(~np.isnan(log_deviations), axis=0)
+    alpha = 1 - confidence_level
+    # smallest k with P(B <= k) > alpha / 2, i.e. the largest k with
+    # P(B <= k - 1) <= alpha / 2; k == 0 means no interval reaches the coverage
+    lower_rank = np.nan_to_num(stats.binom.ppf(alpha / 2, n_valid, 0.5)).astype(int)
+    lower_rank += stats.binom.cdf(lower_rank, n_valid, 0.5) <= alpha / 2
+    upper_rank = n_valid - lower_rank + 1
+    has_interval = (lower_rank >= 1) & (n_valid > 0)
+
+    columns = np.arange(log_deviations.shape[1])
+    lower = np.full(median.shape, np.nan)
+    upper = np.full(median.shape, np.nan)
+    lower[has_interval] = sorted_deviations[
+        lower_rank[has_interval] - 1, columns[has_interval]
+    ]
+    upper[has_interval] = sorted_deviations[
+        upper_rank[has_interval] - 1, columns[has_interval]
+    ]
+
+    center = median
     if display_scale == "percent":
         center, lower, upper = (
             log_ratio_to_percentage(v) for v in (center, lower, upper)
@@ -914,13 +938,14 @@ def plot_continuous_deviation_from_model(
     Plot the deviation from a LOWESS model as a continuous line across the rescaled axis.
 
     A LOWESS model is fitted on the control condition's log-log data; all conditions
-    (including the control) are then plotted as mean ± 95% CI of their per-worm
+    (including the control) are then plotted as median ± 95% CI of their per-worm
     deviations from that model.
 
-    Deviations are log ratios; the mean and standard error are always computed on
-    the log scale. With ``display_scale="percent"`` they are back-transformed with
-    ``(exp(x) - 1) * 100``, so the plotted center is a geometric-mean-based relative
-    deviation and the error bars are asymmetric.
+    Deviations are log ratios. The median and its distribution-free 95% confidence
+    interval (order statistics with binomial ranks) are computed on the log scale;
+    with ``display_scale="percent"`` they are back-transformed with
+    ``(exp(x) - 1) * 100``, which gives exactly the median percent deviation and its
+    interval. The error bars are generally asymmetric.
 
     Parameters:
         conditions_struct (list) : List of condition dicts.
@@ -1013,14 +1038,14 @@ def plot_continuous_deviation_from_model(
             residuals = np.take_along_axis(residuals, sorted_indices, axis=1)
 
         average_column_one_values = np.nanmean(rescaled_column_one_values, axis=0)
-        average_residuals, lower_residuals, upper_residuals = _summarize_log_deviations(
-            residuals, display_scale, n_standard_errors=1.96
+        median_residuals, lower_residuals, upper_residuals = _summarize_log_deviations(
+            residuals, display_scale
         )
 
         label = build_legend(condition, legend)
         plt.plot(
             average_column_one_values,
-            average_residuals,
+            median_residuals,
             label=label,
             color=color_palette[i],
         )
@@ -1068,13 +1093,14 @@ def plot_deviation_from_model_at_ecdysis(
     Plot the per-condition deviation from a polynomial model at each molt event.
 
     A polynomial OLS model is fitted on the control condition; for each other
-    condition, the mean deviation and its standard error are plotted as a line with
+    condition, the median deviation and its 95% CI are plotted as a line with
     error bars over the mean X values at each molt.
 
-    Deviations are log ratios; the mean and standard error are always computed on
-    the log scale. With ``display_scale="percent"`` they are back-transformed with
-    ``(exp(x) - 1) * 100``, so the plotted center is a geometric-mean-based relative
-    deviation and the error bars are asymmetric.
+    Deviations are log ratios. The median and its distribution-free 95% confidence
+    interval (order statistics with binomial ranks) are computed on the log scale;
+    with ``display_scale="percent"`` they are back-transformed with
+    ``(exp(x) - 1) * 100``, which gives exactly the median percent deviation and its
+    interval. The error bars are generally asymmetric.
 
     Parameters:
         conditions_struct (list) : List of condition dicts.
@@ -1183,24 +1209,24 @@ def plot_deviation_from_model_at_ecdysis(
         )
 
         mean_column_one_values = np.nanmean(column_one_values, axis=0)
-        mean_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
+        median_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
             deviations, display_scale
         )
 
         label = build_legend(condition, legend)
         plt.plot(
             mean_column_one_values,
-            mean_deviations,
+            median_deviations,
             label=label,
             color=color_palette[i],
             marker="o",
         )
         plt.errorbar(
             mean_column_one_values,
-            mean_deviations,
+            median_deviations,
             yerr=[
-                mean_deviations - lower_deviations,
-                upper_deviations - mean_deviations,
+                median_deviations - lower_deviations,
+                upper_deviations - median_deviations,
             ],
             color=color_palette[i],
             fmt="o",
@@ -1243,13 +1269,14 @@ def plot_deviation_from_model_development_percentage(
     Plot the deviation from a polynomial model at specified development percentages.
 
     A polynomial OLS model is fitted on the control condition at the sampled
-    percentages; for each other condition, the mean deviation and its standard error
+    percentages; for each other condition, the median deviation and its 95% CI
     are plotted with error bars over the mean X values at those percentages.
 
-    Deviations are log ratios; the mean and standard error are always computed on
-    the log scale. With ``display_scale="percent"`` they are back-transformed with
-    ``(exp(x) - 1) * 100``, so the plotted center is a geometric-mean-based relative
-    deviation and the error bars are asymmetric.
+    Deviations are log ratios. The median and its distribution-free 95% confidence
+    interval (order statistics with binomial ranks) are computed on the log scale;
+    with ``display_scale="percent"`` they are back-transformed with
+    ``(exp(x) - 1) * 100``, which gives exactly the median percent deviation and its
+    interval. The error bars are generally asymmetric.
 
     Parameters:
         conditions_struct (list) : List of condition dicts.
@@ -1360,24 +1387,24 @@ def plot_deviation_from_model_development_percentage(
         )
 
         mean_column_one_values = np.nanmean(column_one_values, axis=0)
-        mean_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
+        median_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
             deviations, display_scale
         )
 
         label = build_legend(condition, legend)
         plt.plot(
             mean_column_one_values,
-            mean_deviations,
+            median_deviations,
             label=label,
             color=color_palette[i],
             marker="o",
         )
         plt.errorbar(
             mean_column_one_values,
-            mean_deviations,
+            median_deviations,
             yerr=[
-                mean_deviations - lower_deviations,
-                upper_deviations - mean_deviations,
+                median_deviations - lower_deviations,
+                upper_deviations - median_deviations,
             ],
             fmt="o",
             capsize=3,
