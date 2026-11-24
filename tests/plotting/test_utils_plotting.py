@@ -68,6 +68,27 @@ def test_add_legend_defaults_to_current_axes(axes_with_lines):
     assert up.add_legend() is ax.get_legend()
 
 
+def test_add_legend_draws_line_styles_without_markers_or_caps():
+    fig, ax = plt.subplots()
+    ax.errorbar([0, 1], [0, 1], yerr=0.1, marker="o", linestyle="--", label="bars")
+    ax.plot([0, 1], [1, 0], marker="o", linestyle=":", color="red", label="line")
+    ax.plot([0, 1], [0.5, 0.5], "s", label="markers only")
+    legend = up.add_legend(ax)
+    handles = dict(zip([t.get_text() for t in legend.texts], legend.legend_handles))
+    dashed, dotted, markers_only = (
+        handles["bars"],
+        handles["line"],
+        handles["markers only"],
+    )
+    assert dashed.get_linestyle() == "--"
+    assert dotted.get_linestyle() == ":"
+    assert dashed.get_marker() == dotted.get_marker() == "None"
+    assert dotted.get_color() == "red"
+    assert markers_only.get_marker() == "s"
+    assert legend.handlelength == up.LEGEND_HANDLE_LENGTH
+    plt.close(fig)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [{"placement": "somewhere"}, {"handles": []}],

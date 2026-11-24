@@ -5,7 +5,9 @@ import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from matplotlib.container import ErrorbarContainer
 from matplotlib.legend import Legend
+from matplotlib.lines import Line2D
 from mpl_toolkits.axes_grid1 import Divider, Size
 
 # THIS PART IS MOSTLY ABOUT HANDLING LEGENDS, SAVING FIGURES, ETC.
@@ -25,6 +27,9 @@ LEGEND_FIGURE_OUTSIDE_ANCHORS = {
 }
 
 AVAILABLE_LEGEND_PLACEMENTS = list(Legend.codes) + list(LEGEND_AXES_OUTSIDE_ANCHORS)
+
+# long enough for a few periods of a dashed or dash-dotted pattern to show
+LEGEND_HANDLE_LENGTH = 3.0
 
 
 def save_figure(
@@ -107,7 +112,9 @@ def add_legend(
     Draw a single legend on an axes or a figure at a named placement.
 
     Any legend already drawn on the target (or, for a figure, on any of its axes, e.g.
-    by seaborn) is removed first, so repeated calls never stack legends.
+    by seaborn) is removed first, so repeated calls never stack legends. Line handles
+    are drawn long and without markers or error bar caps, so their line style stays
+    readable.
 
     Parameters:
         target (matplotlib.axes.Axes or matplotlib.figure.Figure or None): Where to draw
@@ -124,7 +131,7 @@ def add_legend(
             handles are collected automatically. (default: ``False``)
         **legend_kwargs: Extra keyword arguments forwarded to ``legend()``. They take
             precedence over the ``loc``, ``bbox_to_anchor`` and ``ncols`` derived from
-            ``placement``.
+            ``placement`` and over the default ``handlelength``.
 
     Returns:
         matplotlib.legend.Legend or None: The created legend, or ``None`` when
@@ -165,6 +172,8 @@ def add_legend(
                 handles.append(handle)
                 labels.append(label)
 
+    handles = [_line_legend_proxy(handle) for handle in handles]
+
     outside_anchors = (
         LEGEND_FIGURE_OUTSIDE_ANCHORS if is_figure else LEGEND_AXES_OUTSIDE_ANCHORS
     )
@@ -181,8 +190,37 @@ def add_legend(
         placement_kwargs = {"loc": "upper right"}
     else:
         placement_kwargs = {"loc": placement}
+    placement_kwargs["handlelength"] = LEGEND_HANDLE_LENGTH
 
     return target.legend(handles, labels, **{**placement_kwargs, **legend_kwargs})
+
+
+def _line_legend_proxy(handle):
+    """
+    Replace a line-like legend handle by a plain line so its line style is legible.
+
+    Markers drawn in the middle of a legend line and the caps of error bars hide
+    dashes and dots, so a handle that draws a line is replaced by an unmarked line
+    with the same color, width, style and alpha. Handles that draw no line (markers
+    only, patches) are returned unchanged.
+
+    Parameters:
+        handle: A legend artist, e.g. a ``Line2D``, an ``ErrorbarContainer`` or a patch.
+
+    Returns:
+        The proxy ``Line2D``, or ``handle`` itself when it draws no line.
+    """
+    line = handle.lines[0] if isinstance(handle, ErrorbarContainer) else handle
+    if not isinstance(line, Line2D) or line.get_linestyle() in ("None", "", " "):
+        return handle
+    return Line2D(
+        [],
+        [],
+        color=line.get_color(),
+        linewidth=line.get_linewidth(),
+        linestyle=line.get_linestyle(),
+        alpha=line.get_alpha(),
+    )
 
 
 def set_scale(ax: matplotlib.axes.Axes, log_scale: bool | tuple | list) -> None:
