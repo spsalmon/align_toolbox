@@ -478,6 +478,10 @@ def _smooth_series(
         nan_series_time = np.isnan(series_time)
         non_nan_series = series[~nan_series_time]
         non_nan_series_time = series_time[~nan_series_time]
+        # not enough points to smooth (e.g. all time points are NaN):
+        # return an all-NaN series instead of crashing
+        if len(non_nan_series) <= order:
+            return np.full(series.shape, np.nan)
         whittaker_smoother = WhittakerSmoother(
             lmbda=lmbda,
             order=order,
@@ -490,6 +494,8 @@ def _smooth_series(
         smoothed_series = np.full(series.shape, np.nan)
         smoothed_series[~nan_series_time] = whittaker_smoother.smooth(non_nan_series)
     else:
+        if len(series) <= order:
+            return np.full(series.shape, np.nan)
         whittaker_smoother = WhittakerSmoother(
             lmbda=lmbda, order=order, data_length=len(series)
         )
