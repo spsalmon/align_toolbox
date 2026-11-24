@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.collections import PolyCollection
 from scipy import stats
 from statannotations.Annotator import Annotator
 from statannotations.format_annotations import pval_annotation_text, simple_text
@@ -22,6 +23,7 @@ from .utils_plotting import (
     build_legend,
     create_fixed_ax_sized_fig,
     get_colors,
+    get_hatches,
 )
 
 STATANNOTATIONS_TESTS = STATTEST_LIBRARY.keys()
@@ -665,6 +667,48 @@ def _add_metric_text(
         ax.set_ylim(y_min - y_range * bottom_pct, y_max)
 
 
+def _hatch_condition_artists(
+    artists: list,
+    legend_handles: list,
+    hatch_patterns: list | None,
+) -> None:
+    """
+    Hatch each box or violin and legend entry with the pattern of its condition.
+
+    Seaborn draws condition ``i`` of ``order`` centred on ``x = i`` and skips
+    conditions without data, so each artist is matched to its condition by its
+    x position rather than by drawing order.  Legend handles follow ``hue_order``.
+
+    Parameters:
+        artists (list) : Box patches or violin collections drawn on one axes.
+        legend_handles (list) : Legend patches, one per condition, in the order of
+            ``conditions_to_plot``.
+        hatch_patterns (list or None) : Hatch patterns (``None`` for no hatch) in
+            the order of ``conditions_to_plot``; ``None`` hatches nothing.
+
+    Returns:
+        None
+    """
+    if hatch_patterns is None:
+        return
+    for artist in artists:
+        paths = (
+            artist.get_paths() if hasattr(artist, "get_paths") else [artist.get_path()]
+        )
+        extents = [path.get_extents() for path in paths if len(path.vertices)]
+        if not extents:
+            continue
+        x_center = (min(e.x0 for e in extents) + max(e.x1 for e in extents)) / 2
+        condition_index = int(round(x_center))
+        if 0 <= condition_index < len(hatch_patterns):
+            hatch = hatch_patterns[condition_index]
+            if hatch:
+                artist.set_hatch(hatch)
+    for handle, hatch in zip(legend_handles, hatch_patterns):
+        if hatch:
+            handle.set_hatch(hatch)
+
+
 def _plot_violinplot(
     df: pd.DataFrame,
     conditions_to_plot: list,
@@ -680,6 +724,7 @@ def _plot_violinplot(
     show_swarm: bool = True,
     inner: str | None = "box",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    hatch_patterns: list | None = None,
 ) -> tuple[list[float], list[float]]:
     """
     Draw violin + swarm subplots for each ordering group.
@@ -709,6 +754,9 @@ def _plot_violinplot(
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
+        hatch_patterns (list or None) : Hatch patterns (``None`` for no hatch) in
+            the same order as ``conditions_to_plot``; ``None`` hatches nothing.
+            Defaults to ``None``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -743,6 +791,11 @@ def _plot_violinplot(
             legend="full",
             inner=inner,
             linecolor="black",
+        )
+        _hatch_condition_artists(
+            [c for c in current_ax.collections if isinstance(c, PolyCollection)],
+            current_ax.get_legend_handles_labels()[0],
+            hatch_patterns,
         )
 
         if show_swarm:
@@ -820,6 +873,7 @@ def _plot_boxplot(
     show_swarm: bool = True,
     test: str | list[str] = "Mann-Whitney",
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    hatch_patterns: list | None = None,
 ) -> tuple[list[float], list[float]]:
     """
     Draw box + swarm subplots for each ordering group.
@@ -848,6 +902,9 @@ def _plot_boxplot(
         display_transform (Callable or None) : Applied to the values only when
             drawing them; tests, outlier reports and metrics use the original
             values.  Defaults to ``None``.
+        hatch_patterns (list or None) : Hatch patterns (``None`` for no hatch) in
+            the same order as ``conditions_to_plot``; ``None`` hatches nothing.
+            Defaults to ``None``.
 
     Returns:
         tuple[list[float], list[float]] : Per-subplot y-axis minima and maxima.
@@ -882,6 +939,11 @@ def _plot_boxplot(
             linewidth=2,
             legend="full",
             linecolor="black",
+        )
+        _hatch_condition_artists(
+            [box for container in current_ax.containers for box in container.boxes],
+            current_ax.get_legend_handles_labels()[0],
+            hatch_patterns,
         )
 
         if log_scale:
@@ -1398,6 +1460,7 @@ def violinplot(
     figsize: tuple[float, float] | None = None,
     ax_size: tuple[float, float] | None = None,
     colors: list | dict | None = None,
+    hatches: list | dict | None = None,
     plot_significance: bool = False,
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
@@ -1435,6 +1498,9 @@ def violinplot(
             ``(ax_w, ax_h)`` inches. Overrides ``figsize``. Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        hatches (list or dict or None) : Hatch spec passed to ``get_hatches``,
+            e.g. ``{5: "//"}`` to hatch the boxes or violins of condition 5.
+            Defaults to ``None`` (no hatching).
         plot_significance (bool) : If ``True``, add significance brackets.
             Defaults to ``False``.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
@@ -1538,6 +1604,7 @@ def violinplot(
         show_swarm=show_swarm,
         test=significance_test,
         display_transform=display_transform,
+        hatch_patterns=get_hatches(conditions_to_plot, hatches),
     )
 
     _set_labels_and_legend(
@@ -1576,6 +1643,7 @@ def boxplot(
     figsize: tuple[float, float] | None = None,
     ax_size: tuple[float, float] | None = None,
     colors: list | dict | None = None,
+    hatches: list | dict | None = None,
     plot_significance: bool = False,
     show_metric: bool = False,
     significance_pairs: list[tuple] | None = None,
@@ -1615,6 +1683,9 @@ def boxplot(
             ``(ax_w, ax_h)`` inches. Overrides ``figsize``. Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        hatches (list or dict or None) : Hatch spec passed to ``get_hatches``,
+            e.g. ``{5: "//"}`` to hatch the boxes or violins of condition 5.
+            Defaults to ``None`` (no hatching).
         plot_significance (bool) : If ``True``, add significance brackets.
             Defaults to ``False``.
         show_metric (bool) : If ``True``, display summary statistics below the plot.
@@ -1718,6 +1789,7 @@ def boxplot(
         show_metric=show_metric,
         test=significance_test,
         display_transform=display_transform,
+        hatch_patterns=get_hatches(conditions_to_plot, hatches),
     )
 
     _set_labels_and_legend(
@@ -1932,6 +2004,7 @@ def violinplot_larval_stage(
     figsize: tuple[float, float] | None = None,
     ax_size: tuple[float, float] | None = None,
     colors: list | dict | None = None,
+    hatches: list | dict | None = None,
     plot_significance: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
@@ -1974,6 +2047,9 @@ def violinplot_larval_stage(
             ``(ax_w, ax_h)`` inches. Overrides ``figsize``. Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        hatches (list or dict or None) : Hatch spec passed to ``get_hatches``,
+            e.g. ``{5: "//"}`` to hatch the boxes or violins of condition 5.
+            Defaults to ``None`` (no hatching).
         plot_significance (bool) : If ``True``, add significance brackets.
             Defaults to ``False``.
         significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
@@ -2070,6 +2146,7 @@ def violinplot_larval_stage(
         show_metric=show_metric,
         show_swarm=show_swarm,
         test=significance_test,
+        hatch_patterns=get_hatches(conditions_to_plot, hatches),
     )
 
     _set_labels_and_legend(
@@ -2106,6 +2183,7 @@ def boxplot_larval_stage(
     figsize: tuple[float, float] | None = None,
     ax_size: tuple[float, float] | None = None,
     colors: list | dict | None = None,
+    hatches: list | dict | None = None,
     plot_significance: bool = False,
     significance_pairs: list[tuple] | None = None,
     significance_test: str | list[str] = "Mann-Whitney",
@@ -2147,6 +2225,9 @@ def boxplot_larval_stage(
             ``(ax_w, ax_h)`` inches. Overrides ``figsize``. Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        hatches (list or dict or None) : Hatch spec passed to ``get_hatches``,
+            e.g. ``{5: "//"}`` to hatch the boxes or violins of condition 5.
+            Defaults to ``None`` (no hatching).
         plot_significance (bool) : If ``True``, add significance brackets.
             Defaults to ``False``.
         significance_pairs (list[tuple] or None) : Pairs to annotate; all pairs when ``None``.
@@ -2243,6 +2324,7 @@ def boxplot_larval_stage(
         show_metric=show_metric,
         show_swarm=show_swarm,
         test=significance_test,
+        hatch_patterns=get_hatches(conditions_to_plot, hatches),
     )
 
     _set_labels_and_legend(

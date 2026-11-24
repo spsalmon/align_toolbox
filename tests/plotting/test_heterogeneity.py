@@ -68,3 +68,10 @@ def test_cv_rescaled_data(conditions_struct, smooth):
     )
     lines = _line_data(fig)
     assert len(lines) == 2 and len(lines[0]) == 100
+
+
+def test_spread_at_ecdysis_draws_each_condition_in_its_linestyle(conditions_struct):
+    fig = heterogeneity.plot_cv_at_ecdysis(
+        conditions_struct, "body_seg_volume_at_ecdysis", [0, 1], linestyles={1: "--"}
+    )
+    assert [line.get_linestyle() for line in fig.axes[0].get_lines()] == ["-", "--"]

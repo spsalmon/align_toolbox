@@ -11,6 +11,7 @@ from .utils_plotting import (
     build_legend,
     create_fixed_ax_sized_fig,
     get_colors,
+    get_linestyles,
     set_scale,
 )
 
@@ -28,6 +29,7 @@ def plot_aggregated_series(
     time_step: int = 10,
     log_scale: bool = True,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
@@ -64,6 +66,9 @@ def plot_aggregated_series(
             Defaults to ``True``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         x_axis_label (str or None) : X-axis label; auto-generated when ``None``.
@@ -88,6 +93,7 @@ def plot_aggregated_series(
             ax_w=ax_size[0], ax_h=ax_size[1]
         )  # sets pyplot current figure/axes
     color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     def plot_single_series(column: str):
         for i, condition_id in enumerate(conditions_to_plot):
@@ -140,7 +146,13 @@ def plot_aggregated_series(
                 ci_lower = ci_lower[~x_values_not_in_xlim]
                 ci_upper = ci_upper[~x_values_not_in_xlim]
 
-            plt.plot(x_values, aggregated_series, color=color_palette[i], label=label)
+            plt.plot(
+                x_values,
+                aggregated_series,
+                color=color_palette[i],
+                linestyle=line_styles[i],
+                label=label,
+            )
             plt.fill_between(
                 x_values, ci_lower, ci_upper, color=color_palette[i], alpha=0.2
             )

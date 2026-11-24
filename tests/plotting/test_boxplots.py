@@ -1,7 +1,7 @@
 import matplotlib.figure
 import numpy as np
 import pytest
-from matplotlib.collections import PathCollection
+from matplotlib.collections import PathCollection, PolyCollection
 from matplotlib.colors import to_rgb
 from scipy import stats
 
@@ -464,3 +464,58 @@ def test_report_lists_outliers_with_their_filemap_and_distance(
     # 28 ones and two 100s: mean 7.6, std 25.1; one 100 among 29 ones: mean 4.3,
     # std 18.1
     np.testing.assert_allclose(outliers["z"], [3.68, 5.30, 3.68], atol=0.01)
+
+
+def _hatched_shapes(ax):
+    """Hatch of each box or violin, from left to right."""
+    boxes = [box for container in ax.containers for box in container.boxes]
+    if boxes:
+        shapes = [(box.get_path().get_extents().x0, box) for box in boxes]
+    else:
+        violins = [c for c in ax.collections if isinstance(c, PolyCollection)]
+        shapes = [(v.get_paths()[0].get_extents().x0, v) for v in violins]
+    return [shape.get_hatch() for _, shape in sorted(shapes, key=lambda s: s[0])]
+
+
+@pytest.mark.parametrize(
+    "plot_function",
+    [
+        boxplots.boxplot,
+        boxplots.violinplot,
+        boxplots.boxplot_larval_stage,
+        boxplots.violinplot_larval_stage,
+    ],
+)
+def test_box_and_violin_plots_hatch_requested_conditions(
+    conditions_struct, plot_function
+):
+    larval_stage = plot_function.__name__.endswith("larval_stage")
+    column = "body_seg_volume" if larval_stage else "body_seg_volume_at_ecdysis"
+    fig = plot_function(
+        conditions_struct,
+        column,
+        [0, 1],
+        hatches={1: "//"},
+        show_swarm=False,
+    )
+    for ax in fig.axes:
+        assert _hatched_shapes(ax) == [None, "//"]
+    assert [patch.get_hatch() for patch in fig.legends[0].get_patches()] == [
+        None,
+        "//",
+    ]
+
+
+def test_hatch_follows_condition_when_another_condition_has_no_data(
+    conditions_struct,
+):
+    conditions_struct[0]["body_seg_volume_at_ecdysis"][:, 2] = np.nan
+    fig = boxplots.boxplot(
+        conditions_struct,
+        "body_seg_volume_at_ecdysis",
+        [0, 1],
+        events_to_plot=[2],
+        hatches=[None, "x"],
+        show_swarm=False,
+    )
+    assert _hatched_shapes(fig.axes[0]) == ["x"]

@@ -250,6 +250,105 @@ def get_colors(
     return colors
 
 
+def _get_condition_styles(
+    conditions_to_plot: list,
+    styles: list | dict | None,
+    default: str | None,
+    style_name: str,
+) -> list:
+    """
+    Return one style value per condition from a list, dict or ``None`` specification.
+
+    Parameters:
+        conditions_to_plot (list): Ordered list of condition identifiers.
+        styles (list or dict or None): ``None`` gives every condition ``default``; a
+            list must have one entry per condition; a dict maps condition identifiers
+            to styles, and conditions missing from it get ``default``.
+        default (str or None): Style used for conditions without an explicit style.
+        style_name (str): Name of the argument, used in error messages.
+
+    Returns:
+        list: Styles in the same order as ``conditions_to_plot``.
+
+    Raises:
+        ValueError: If a list ``styles`` has a different length than
+            ``conditions_to_plot``, or ``styles`` is neither a list, a dict nor ``None``.
+    """
+    if styles is None:
+        return [default] * len(conditions_to_plot)
+    if isinstance(styles, dict):
+        return [styles.get(condition, default) for condition in conditions_to_plot]
+    if isinstance(styles, list | tuple):
+        if len(styles) != len(conditions_to_plot):
+            raise ValueError(
+                f"Length of {style_name} ({len(styles)}) does not match number of conditions to plot ({len(conditions_to_plot)})."
+            )
+        return list(styles)
+    raise ValueError(
+        f"{style_name} must be a list, a dict or None, got {type(styles).__name__}."
+    )
+
+
+def get_linestyles(
+    conditions_to_plot: list,
+    linestyles: list | dict | None,
+    default: str = "-",
+) -> list:
+    """
+    Return one matplotlib line style per condition.
+
+    Lets conditions that share a color be told apart, e.g. ``{5: "--"}`` draws
+    condition 5 dashed and every other condition solid.
+
+    Parameters:
+        conditions_to_plot (list): Ordered list of condition identifiers.
+        linestyles (list or dict or None): Line style specification, using any
+            matplotlib ``linestyle`` (``"-"``, ``"--"``, ``":"``, ``"-."``, or a
+            ``(offset, (on, off, ...))`` dash tuple). ``None`` gives every condition
+            ``default``; a list must have one entry per condition; a dict maps
+            condition identifiers to styles, and conditions missing from it get
+            ``default``.
+        default (str): Line style of conditions without an explicit style.
+            (default: ``"-"``)
+
+    Returns:
+        list: Line styles in the same order as ``conditions_to_plot``.
+
+    Raises:
+        ValueError: If a list ``linestyles`` has a different length than
+            ``conditions_to_plot``.
+    """
+    return _get_condition_styles(conditions_to_plot, linestyles, default, "linestyles")
+
+
+def get_hatches(
+    conditions_to_plot: list,
+    hatches: list | dict | None,
+) -> list:
+    """
+    Return one matplotlib hatch pattern per condition, ``None`` meaning no hatch.
+
+    Lets conditions that share a color be told apart in box and violin plots, e.g.
+    ``{5: "//"}`` hatches condition 5 and leaves every other condition plain.
+
+    Parameters:
+        conditions_to_plot (list): Ordered list of condition identifiers.
+        hatches (list or dict or None): Hatch specification, using any matplotlib
+            ``hatch`` pattern (``"/"``, ``"\\\\"``, ``"x"``, ``"."``, ...; repeating a
+            symbol makes it denser, e.g. ``"///"``). ``None`` hatches nothing; a
+            list must have one entry per condition; a dict maps condition
+            identifiers to patterns, and conditions missing from it are not hatched.
+
+    Returns:
+        list: Hatch patterns (or ``None``) in the same order as ``conditions_to_plot``.
+
+    Raises:
+        ValueError: If a list ``hatches`` has a different length than
+            ``conditions_to_plot``.
+    """
+    return _get_condition_styles(conditions_to_plot, hatches, None, "hatches")
+
+
 def create_fixed_ax_sized_fig(
     ax_w: float = 3.5,
     ax_h: float = 3.0,

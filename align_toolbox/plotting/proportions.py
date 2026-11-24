@@ -19,6 +19,7 @@ from .utils_plotting import (
     build_legend,
     create_fixed_ax_sized_fig,
     get_colors,
+    get_linestyles,
     set_scale,
 )
 
@@ -427,6 +428,7 @@ def plot_model_comparison_at_ecdysis(
     remove_outliers_fitting: bool | None = None,
     log_scale: tuple[bool, bool] | bool = (True, False),
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
@@ -455,6 +457,8 @@ def plot_model_comparison_at_ecdysis(
             Defaults to ``(True, False)``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec of the fitted model
+            lines, passed to ``get_linestyles``.  Defaults to ``None`` (dashed lines).
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         x_axis_label (str or None) : X-axis label; falls back to ``column_one``.
@@ -479,6 +483,7 @@ def plot_model_comparison_at_ecdysis(
         conditions_to_plot,
         colors,
     )
+    line_styles = get_linestyles(conditions_to_plot, linestyles, default="--")
 
     r_squared_texts = []
 
@@ -557,7 +562,7 @@ def plot_model_comparison_at_ecdysis(
             x_values,
             y_values,
             color=color_palette[i],
-            linestyle="--",
+            linestyle=line_styles[i],
             label=label,
         )
 
@@ -707,6 +712,7 @@ def plot_correlation(
     conditions_to_plot: list,
     log_scale: bool | tuple | list = True,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
@@ -728,6 +734,9 @@ def plot_correlation(
             Defaults to ``True``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         x_axis_label (str or None) : X-axis label; falls back to ``column_one``.
@@ -750,6 +759,7 @@ def plot_correlation(
         conditions_to_plot,
         colors,
     )
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     for i, condition_id in enumerate(conditions_to_plot):
         condition_dict = conditions_struct[condition_id]
@@ -791,6 +801,7 @@ def plot_correlation(
             aggregated_series_one,
             aggregated_series_two,
             color=color_palette[i],
+            linestyle=line_styles[i],
             label=label,
         )
 
@@ -822,6 +833,7 @@ def plot_correlation_at_ecdysis(
     remove_hatch: bool = True,
     log_scale: bool | tuple | list = True,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
@@ -845,6 +857,9 @@ def plot_correlation_at_ecdysis(
             Defaults to ``True``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         x_axis_label (str or None) : X-axis label; falls back to ``column_one``.
@@ -867,6 +882,7 @@ def plot_correlation_at_ecdysis(
         conditions_to_plot,
         colors,
     )
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     for i, condition_id in enumerate(conditions_to_plot):
         condition_dict = conditions_struct[condition_id]
@@ -895,7 +911,7 @@ def plot_correlation_at_ecdysis(
             label=label,
             capsize=3,
         )
-        plt.plot(x, y, color=color_palette[i])
+        plt.plot(x, y, color=color_palette[i], linestyle=line_styles[i])
 
     if x_axis_label is not None:
         plt.xlabel(x_axis_label)
@@ -925,6 +941,7 @@ def plot_continuous_deviation_from_model(
     conditions_to_plot: list,
     display_scale: Literal["log", "percent"] = "percent",
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     log_scale: tuple[bool, bool] | bool = (True, False),
     legend: dict | None = None,
     x_axis_label: str | None = None,
@@ -958,6 +975,9 @@ def plot_continuous_deviation_from_model(
             Defaults to ``"percent"``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         log_scale (tuple[bool, bool] or bool) : Scale spec passed to ``set_scale``.
             Defaults to ``(True, False)``.
         legend (dict or None) : Legend spec passed to ``build_legend``.
@@ -996,6 +1016,7 @@ def plot_continuous_deviation_from_model(
         conditions_to_plot,
         colors,
     )
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     xlbl = rescaled_column_one
     ylbl = rescaled_column_two
@@ -1048,6 +1069,7 @@ def plot_continuous_deviation_from_model(
             median_residuals,
             label=label,
             color=color_palette[i],
+            linestyle=line_styles[i],
         )
         plt.fill_between(
             average_column_one_values,
@@ -1080,6 +1102,7 @@ def plot_deviation_from_model_at_ecdysis(
     display_scale: Literal["log", "percent"] = "percent",
     log_scale: tuple[bool, bool] | bool = (True, False),
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
@@ -1117,6 +1140,9 @@ def plot_deviation_from_model_at_ecdysis(
             Defaults to ``(True, False)``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         x_axis_label (str or None) : X-axis label; falls back to ``column_one``.
@@ -1157,6 +1183,7 @@ def plot_deviation_from_model_at_ecdysis(
         conditions_to_plot,
         colors,
     )
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     xlbl = column_one
     ylbl = column_two
@@ -1209,8 +1236,8 @@ def plot_deviation_from_model_at_ecdysis(
         )
 
         mean_column_one_values = np.nanmean(column_one_values, axis=0)
-        median_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
-            deviations, display_scale
+        median_deviations, lower_deviations, upper_deviations = (
+            _summarize_log_deviations(deviations, display_scale)
         )
 
         label = build_legend(condition, legend)
@@ -1219,6 +1246,7 @@ def plot_deviation_from_model_at_ecdysis(
             median_deviations,
             label=label,
             color=color_palette[i],
+            linestyle=line_styles[i],
             marker="o",
         )
         plt.errorbar(
@@ -1256,6 +1284,7 @@ def plot_deviation_from_model_development_percentage(
     display_scale: Literal["log", "percent"] = "percent",
     log_scale: tuple[bool, bool] | bool = (True, False),
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     legend: dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
@@ -1293,6 +1322,9 @@ def plot_deviation_from_model_development_percentage(
             Defaults to ``(True, False)``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         legend (dict or None) : Legend spec passed to ``build_legend``.
             Defaults to ``None``.
         x_axis_label (str or None) : X-axis label; falls back to ``column_one``.
@@ -1330,6 +1362,7 @@ def plot_deviation_from_model_development_percentage(
             ax_w=ax_size[0], ax_h=ax_size[1]
         )  # sets pyplot current figure/axes
     color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     xlbl = column_one
     ylbl = column_two
@@ -1387,8 +1420,8 @@ def plot_deviation_from_model_development_percentage(
         )
 
         mean_column_one_values = np.nanmean(column_one_values, axis=0)
-        median_deviations, lower_deviations, upper_deviations = _summarize_log_deviations(
-            deviations, display_scale
+        median_deviations, lower_deviations, upper_deviations = (
+            _summarize_log_deviations(deviations, display_scale)
         )
 
         label = build_legend(condition, legend)
@@ -1397,6 +1430,7 @@ def plot_deviation_from_model_development_percentage(
             median_deviations,
             label=label,
             color=color_palette[i],
+            linestyle=line_styles[i],
             marker="o",
         )
         plt.errorbar(
@@ -1427,6 +1461,7 @@ def plot_normalized_proportions_at_ecdysis(
     control_condition_id: int,
     conditions_to_plot: list,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     aggregation: str = "mean",
     log_scale: tuple[bool, bool] | bool = (True, False),
     legend: dict | None = None,
@@ -1449,6 +1484,9 @@ def plot_normalized_proportions_at_ecdysis(
         conditions_to_plot (list) : Ordered condition identifiers.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         aggregation (str) : Aggregation function; currently only ``"mean"`` is used.
             Defaults to ``"mean"``.
         log_scale (tuple[bool, bool] or bool) : Scale spec passed to ``set_scale``.
@@ -1475,6 +1513,7 @@ def plot_normalized_proportions_at_ecdysis(
         conditions_to_plot,
         colors,
     )
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
     control_condition = conditions_struct[control_condition_id]
     control_column_one, control_column_two = (
         control_condition[column_one],
@@ -1510,7 +1549,7 @@ def plot_normalized_proportions_at_ecdysis(
 
         label = build_legend(condition, legend)
 
-        plt.plot(x, y, label=label, color=color_palette[i])
+        plt.plot(x, y, label=label, color=color_palette[i], linestyle=line_styles[i])
         plt.errorbar(x, y, yerr=y_err, fmt="o", capsize=3, color=color_palette[i])
 
     plt.xlabel(x_axis_label)

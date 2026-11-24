@@ -9,6 +9,7 @@ from .utils_plotting import (
     build_legend,
     create_fixed_ax_sized_fig,
     get_colors,
+    get_linestyles,
 )
 
 
@@ -19,6 +20,7 @@ def plot_cv_at_ecdysis(
     remove_hatch: bool = True,
     legend: dict | None = None,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
     exclude_arrests: bool = False,
@@ -42,6 +44,9 @@ def plot_cv_at_ecdysis(
             Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         x_axis_label (str or None) : X-axis label.  Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label.  Defaults to ``None``.
         exclude_arrests (bool) : If ``True``, remove arrested worms before
@@ -61,6 +66,7 @@ def plot_cv_at_ecdysis(
         )  # sets pyplot current figure/axes
 
     color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     for i, condition in enumerate(conditions_to_plot):
         condition_dict = conditions_struct[condition]
@@ -71,7 +77,13 @@ def plot_cv_at_ecdysis(
             values = exclude_arrests_from_series_at_ecdysis(values)
         cvs = np.nanstd(values, axis=0) / np.nanmean(values, axis=0) * 100
         label = build_legend(condition_dict, legend)
-        plt.plot(cvs, label=label, marker="o", color=color_palette[i])
+        plt.plot(
+            cvs,
+            label=label,
+            marker="o",
+            color=color_palette[i],
+            linestyle=line_styles[i],
+        )
     # replace the ticks by [L1, L2, L3, L4]
     if remove_hatch:
         plt.xticks(range(4), ["M1", "M2", "M3", "M4"])
@@ -92,6 +104,7 @@ def plot_std_at_ecdysis(
     remove_hatch: bool = True,
     legend: dict | None = None,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
     exclude_arrests: bool = False,
@@ -115,6 +128,9 @@ def plot_std_at_ecdysis(
             Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         x_axis_label (str or None) : X-axis label.  Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label.  Defaults to ``None``.
         exclude_arrests (bool) : If ``True``, remove arrested worms before
@@ -134,6 +150,7 @@ def plot_std_at_ecdysis(
         )  # sets pyplot current figure/axes
 
     color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     for i, condition in enumerate(conditions_to_plot):
         condition_dict = conditions_struct[condition]
@@ -144,7 +161,13 @@ def plot_std_at_ecdysis(
             values = exclude_arrests_from_series_at_ecdysis(values)
         stds = np.nanstd(values, axis=0)
         label = build_legend(condition_dict, legend)
-        plt.plot(stds, label=label, marker="o", color=color_palette[i])
+        plt.plot(
+            stds,
+            label=label,
+            marker="o",
+            color=color_palette[i],
+            linestyle=line_styles[i],
+        )
     if remove_hatch:
         plt.xticks(range(4), ["M1", "M2", "M3", "M4"])
     else:
@@ -164,6 +187,7 @@ def plot_cv_development_percentage(
     percentages: np.ndarray = np.linspace(0, 1, 11),
     legend: dict | None = None,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
     ax_size: tuple[float, float] | None = None,
@@ -186,6 +210,9 @@ def plot_cv_development_percentage(
             Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         x_axis_label (str or None) : X-axis label.  Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label.  Defaults to ``None``.
         ax_size (tuple[float, float] or None) : If provided, fixes the axes area to
@@ -202,6 +229,7 @@ def plot_cv_development_percentage(
         )  # sets pyplot current figure/axes
 
     color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
     for i, condition in enumerate(conditions_to_plot):
         condition_dict = conditions_struct[condition]
         values = condition_dict[column]
@@ -213,7 +241,12 @@ def plot_cv_development_percentage(
         cvs = np.nanstd(values, axis=0) / (np.nanmean(values, axis=0) + epsilon) * 100
         label = build_legend(condition_dict, legend)
         plt.plot(
-            percentages * 100, cvs, label=label, color=color_palette[i], marker="o"
+            percentages * 100,
+            cvs,
+            label=label,
+            color=color_palette[i],
+            linestyle=line_styles[i],
+            marker="o",
         )
     plt.xlabel(x_axis_label)
     plt.ylabel(y_axis_label)
@@ -230,6 +263,7 @@ def plot_cv_rescaled_data(
     smooth: bool = False,
     legend: dict | None = None,
     colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
     x_axis_label: str | None = None,
     y_axis_label: str | None = None,
     ax_size: tuple[float, float] | None = None,
@@ -252,6 +286,9 @@ def plot_cv_rescaled_data(
             Defaults to ``None``.
         colors (list or dict or None) : Color spec passed to ``get_colors``.
             Defaults to ``None``.
+        linestyles (list or dict or None) : Line style spec passed to
+            ``get_linestyles``, e.g. ``{5: "--"}`` to dash condition 5.
+            Defaults to ``None`` (solid lines).
         x_axis_label (str or None) : X-axis label.  Defaults to ``None``.
         y_axis_label (str or None) : Y-axis label.  Defaults to ``None``.
         ax_size (tuple[float, float] or None) : If provided, fixes the axes area to
@@ -268,6 +305,7 @@ def plot_cv_rescaled_data(
         )  # sets pyplot current figure/axes
 
     color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
 
     for i, condition in enumerate(conditions_to_plot):
         condition_dict = conditions_struct[condition]
@@ -277,7 +315,7 @@ def plot_cv_rescaled_data(
         if smooth:
             cvs = medfilt(cvs, 7)
             # cvs = savgol_filter(cvs, 15, 3)
-        plt.plot(cvs, label=label, color=color_palette[i])
+        plt.plot(cvs, label=label, color=color_palette[i], linestyle=line_styles[i])
     plt.xlabel(x_axis_label)
     plt.ylabel(y_axis_label)
     add_legend(placement=legend_placement)

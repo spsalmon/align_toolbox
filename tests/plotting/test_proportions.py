@@ -239,3 +239,29 @@ def test_summarize_log_deviations_median_ci_matches_scipy_and_handles_nans():
     assert center[2] == pytest.approx(np.nanmedian(log_deviations[:, 2]))
     assert np.isnan(lower[2:]).all() and np.isnan(upper[2:]).all()
     assert np.isnan(center[3])
+
+
+def test_plot_deviation_from_model_at_ecdysis_dashes_requested_condition(
+    conditions_struct,
+):
+    fig = proportions.plot_deviation_from_model_at_ecdysis(
+        conditions_struct, *COLUMNS, 0, [0, 1], log_scale=False, linestyles={1: "--"}
+    )
+    drawn = [line for line in fig.axes[0].get_lines() if line.get_linestyle() != "None"]
+    assert [line.get_linestyle() for line in drawn] == ["-", "--"]
+    np.testing.assert_allclose(drawn[1].get_ydata(), 10, atol=1e-6)
+    legend_lines = fig.axes[0].get_legend().get_lines()
+    assert [line.get_linestyle() for line in legend_lines] == ["-", "--"]
+
+
+def test_plot_model_comparison_model_lines_are_dashed_unless_overridden(
+    conditions_struct,
+):
+    fig = proportions.plot_model_comparison_at_ecdysis(
+        conditions_struct, *COLUMNS, [0, 1]
+    )
+    assert [line.get_linestyle() for line in fig.axes[0].get_lines()] == ["--", "--"]
+    fig = proportions.plot_model_comparison_at_ecdysis(
+        conditions_struct, *COLUMNS, [0, 1], linestyles=["-", ":"]
+    )
+    assert [line.get_linestyle() for line in fig.axes[0].get_lines()] == ["-", ":"]

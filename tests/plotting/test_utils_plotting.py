@@ -128,3 +128,20 @@ def test_create_fixed_ax_sized_fig_rows_are_top_to_bottom():
     fig, axes = up.create_fixed_ax_sized_fig(nrows=2, ncols=1)
     fig.canvas.draw()
     assert axes[0].get_window_extent().y0 > axes[1].get_window_extent().y0
+
+
+def test_get_linestyles_fills_missing_conditions_with_default():
+    assert up.get_linestyles([0, 1, 5], {5: "--"}) == ["-", "-", "--"]
+    assert up.get_linestyles([0, 1], None, default=":") == [":", ":"]
+    assert up.get_linestyles([0, 1], ["-", "-."]) == ["-", "-."]
+
+
+def test_get_hatches_leaves_unlisted_conditions_plain():
+    assert up.get_hatches([0, 5], {5: "//"}) == [None, "//"]
+    assert up.get_hatches([0, 5], None) == [None, None]
+
+
+@pytest.mark.parametrize("function", [up.get_linestyles, up.get_hatches])
+def test_condition_styles_reject_list_of_wrong_length(function):
+    with pytest.raises(ValueError, match="does not match"):
+        function([0, 1, 2], ["--", "--"])
