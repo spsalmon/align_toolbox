@@ -519,3 +519,47 @@ def test_hatch_follows_condition_when_another_condition_has_no_data(
         show_swarm=False,
     )
     assert _hatched_shapes(fig.axes[0]) == ["x"]
+
+
+@pytest.mark.parametrize(
+    "plot_function", [boxplots.boxplot, boxplots.violinplot, boxplots.swarmplot]
+)
+def test_event_plots_condition_table(conditions_struct, plot_function):
+    fig = plot_function(
+        conditions_struct,
+        "body_seg_volume_at_ecdysis",
+        [1, 0],
+        events_to_plot=[1, 2],
+        condition_table={
+            "longer": lambda c: c["condition_id"] == 1,
+            "allele": {0: "abt7"},
+        },
+    )
+    assert not fig.legends
+    first_panel, second_panel = fig.axes
+    assert first_panel.get_legend() is None
+    assert [t.get_text() for t in first_panel.texts] == [
+        "longer",
+        "+",
+        "−",
+        "allele",
+        "−",
+        "abt7",
+    ]
+    assert [t.get_text() for t in second_panel.texts] == ["+", "−", "−", "abt7"]
+    for panel in fig.axes:
+        assert list(panel.get_xticks()) == [0, 1]
+        ticks = panel.xaxis.get_major_ticks()
+        assert all(tick.tick1line.get_visible() for tick in ticks)
+        assert not any(tick.label1.get_visible() for tick in ticks)
+
+
+def test_condition_table_cannot_be_combined_with_legend_as_xticks(conditions_struct):
+    with pytest.raises(ValueError, match="cannot be combined"):
+        boxplots.boxplot(
+            conditions_struct,
+            "body_seg_volume_at_ecdysis",
+            [0, 1],
+            legend_as_xticks=True,
+            condition_table={"longer": [False, True]},
+        )

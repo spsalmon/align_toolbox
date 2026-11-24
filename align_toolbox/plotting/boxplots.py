@@ -19,7 +19,9 @@ from statsmodels.stats.multitest import multipletests
 
 from .utils_data_processing import rescale_without_flattening
 from .utils_plotting import (
+    add_condition_table,
     add_legend,
+    build_condition_table,
     build_legend,
     create_fixed_ax_sized_fig,
     get_colors,
@@ -1400,13 +1402,15 @@ def _set_labels_and_legend(
     legend: dict | None,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    condition_table: dict | None = None,
 ) -> None:
     """
     Set the y-axis label and place a shared figure legend.
 
     Individual subplot legends are removed; a single legend is added to the figure,
     or, with ``legend_as_xticks``, the legend labels are written as x tick labels
-    under each box or violin instead.
+    under each box or violin instead, or, with ``condition_table``, a table of
+    ``+`` and ``−`` is written under them.
 
     Parameters:
         ax (np.ndarray or matplotlib.axes.Axes) : Axes array or scalar.
@@ -1421,10 +1425,19 @@ def _set_labels_and_legend(
         legend_as_xticks (bool) : If ``True``, label each box or violin with its legend
             text on the x axis and draw no legend; ``legend_placement`` is ignored.
             Defaults to ``False``.
+        condition_table (dict or None) : Condition table spec passed to
+            ``build_condition_table``; if given, the table is written under every
+            panel, with row labels on the first, and no legend is drawn.
+            Defaults to ``None``.
 
     Returns:
         None
+
+    Raises:
+        ValueError: If both ``legend_as_xticks`` and ``condition_table`` are given.
     """
+    if legend_as_xticks and condition_table is not None:
+        raise ValueError("legend_as_xticks and condition_table cannot be combined.")
     if not isinstance(ax, np.ndarray):
         ax = [ax]
 
@@ -1438,6 +1451,15 @@ def _set_labels_and_legend(
         build_legend(conditions_struct[condition_id], legend)
         for condition_id in conditions_to_plot
     ]
+
+    if condition_table is not None:
+        table = build_condition_table(
+            conditions_struct, conditions_to_plot, condition_table
+        )
+        for panel_index, axes in enumerate(ax):
+            add_condition_table(axes, table, show_row_labels=panel_index == 0)
+        add_legend(fig, None)
+        return
 
     if legend_as_xticks:
         for axes in ax:
@@ -1473,6 +1495,7 @@ def violinplot(
     show_swarm: bool = True,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    condition_table: dict | None = None,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
@@ -1531,6 +1554,17 @@ def violinplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        condition_table (dict or None) : Draw no legend and instead write a table
+            under the plot, one row per factor and one column per condition, with
+            ``+`` where a condition has the factor and ``−`` where it lacks it.
+            Maps each row label to its entries: a list with one entry per
+            condition, a dict mapping condition identifiers to entries, or a
+            callable taking a condition dict, e.g.
+            ``{"raga-1:AID": lambda c: "raga-1:AID" in c["description"]}``.  An
+            entry is ``True``, ``False``, a string written as is, or ``None``
+            (blank); see ``build_condition_table``.  Cannot be combined with
+            ``legend_as_xticks``; ``legend_placement`` is ignored.
+            Defaults to ``None``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
             with its point and value, grouped by the filemap it comes from, and
@@ -1617,6 +1651,7 @@ def violinplot(
         legend,
         legend_placement,
         legend_as_xticks,
+        condition_table,
     )
 
     if share_y_axis:
@@ -1656,6 +1691,7 @@ def boxplot(
     show_swarm: bool = True,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    condition_table: dict | None = None,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
@@ -1716,6 +1752,17 @@ def boxplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        condition_table (dict or None) : Draw no legend and instead write a table
+            under the plot, one row per factor and one column per condition, with
+            ``+`` where a condition has the factor and ``−`` where it lacks it.
+            Maps each row label to its entries: a list with one entry per
+            condition, a dict mapping condition identifiers to entries, or a
+            callable taking a condition dict, e.g.
+            ``{"raga-1:AID": lambda c: "raga-1:AID" in c["description"]}``.  An
+            entry is ``True``, ``False``, a string written as is, or ``None``
+            (blank); see ``build_condition_table``.  Cannot be combined with
+            ``legend_as_xticks``; ``legend_placement`` is ignored.
+            Defaults to ``None``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
             with its point and value, grouped by the filemap it comes from, and
@@ -1802,6 +1849,7 @@ def boxplot(
         legend,
         legend_placement,
         legend_as_xticks,
+        condition_table,
     )
 
     if share_y_axis:
@@ -1839,6 +1887,7 @@ def swarmplot(
     share_y_axis: bool = False,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    condition_table: dict | None = None,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     display_transform: Callable[[np.ndarray], np.ndarray] | None = None,
@@ -1893,6 +1942,17 @@ def swarmplot(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             swarm with its legend text on the x axis; ``legend_placement`` is
             ignored.  Defaults to ``False``.
+        condition_table (dict or None) : Draw no legend and instead write a table
+            under the plot, one row per factor and one column per condition, with
+            ``+`` where a condition has the factor and ``−`` where it lacks it.
+            Maps each row label to its entries: a list with one entry per
+            condition, a dict mapping condition identifiers to entries, or a
+            callable taking a condition dict, e.g.
+            ``{"raga-1:AID": lambda c: "raga-1:AID" in c["description"]}``.  An
+            entry is ``True``, ``False``, a string written as is, or ``None``
+            (blank); see ``build_condition_table``.  Cannot be combined with
+            ``legend_as_xticks``; ``legend_placement`` is ignored.
+            Defaults to ``None``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
             with its point and value, grouped by the filemap it comes from, and
@@ -1977,6 +2037,7 @@ def swarmplot(
         legend,
         legend_placement,
         legend_as_xticks,
+        condition_table,
     )
 
     if share_y_axis:
@@ -2017,6 +2078,7 @@ def violinplot_larval_stage(
     show_swarm: bool = True,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    condition_table: dict | None = None,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     return_report: bool = False,
@@ -2080,6 +2142,17 @@ def violinplot_larval_stage(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        condition_table (dict or None) : Draw no legend and instead write a table
+            under the plot, one row per factor and one column per condition, with
+            ``+`` where a condition has the factor and ``−`` where it lacks it.
+            Maps each row label to its entries: a list with one entry per
+            condition, a dict mapping condition identifiers to entries, or a
+            callable taking a condition dict, e.g.
+            ``{"raga-1:AID": lambda c: "raga-1:AID" in c["description"]}``.  An
+            entry is ``True``, ``False``, a string written as is, or ``None``
+            (blank); see ``build_condition_table``.  Cannot be combined with
+            ``legend_as_xticks``; ``legend_placement`` is ignored.
+            Defaults to ``None``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
             with its point and value, grouped by the filemap it comes from, and
@@ -2159,6 +2232,7 @@ def violinplot_larval_stage(
         legend,
         legend_placement,
         legend_as_xticks,
+        condition_table,
     )
 
     if share_y_axis:
@@ -2196,6 +2270,7 @@ def boxplot_larval_stage(
     show_swarm: bool = True,
     legend_placement: str | None = "outside right",
     legend_as_xticks: bool = False,
+    condition_table: dict | None = None,
     report_outliers: bool = False,
     outlier_threshold: float = 2.0,
     return_report: bool = False,
@@ -2258,6 +2333,17 @@ def boxplot_larval_stage(
         legend_as_xticks (bool) : If ``True``, draw no legend and instead label each
             box or violin with its legend text on the x axis; ``legend_placement``
             is ignored.  Defaults to ``False``.
+        condition_table (dict or None) : Draw no legend and instead write a table
+            under the plot, one row per factor and one column per condition, with
+            ``+`` where a condition has the factor and ``−`` where it lacks it.
+            Maps each row label to its entries: a list with one entry per
+            condition, a dict mapping condition identifiers to entries, or a
+            callable taking a condition dict, e.g.
+            ``{"raga-1:AID": lambda c: "raga-1:AID" in c["description"]}``.  An
+            entry is ``True``, ``False``, a string written as is, or ``None``
+            (blank); see ``build_condition_table``.  Cannot be combined with
+            ``legend_as_xticks``; ``legend_placement`` is ignored.
+            Defaults to ``None``.
         report_outliers (bool) : If ``True``, print every point lying more than
             ``outlier_threshold`` std from the mean of its condition in its panel,
             with its point and value, grouped by the filemap it comes from, and
@@ -2337,6 +2423,7 @@ def boxplot_larval_stage(
         legend,
         legend_placement,
         legend_as_xticks,
+        condition_table,
     )
 
     if share_y_axis:

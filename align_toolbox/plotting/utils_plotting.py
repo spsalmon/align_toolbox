@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable
 
 import matplotlib.axes
 import matplotlib.figure
@@ -6,8 +7,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from matplotlib.container import ErrorbarContainer
+from matplotlib.font_manager import FontProperties
 from matplotlib.legend import Legend
 from matplotlib.lines import Line2D
+from matplotlib.text import Annotation
 from mpl_toolkits.axes_grid1 import Divider, Size
 
 # THIS PART IS MOSTLY ABOUT HANDLING LEGENDS, SAVING FIGURES, ETC.
@@ -30,6 +33,10 @@ AVAILABLE_LEGEND_PLACEMENTS = list(Legend.codes) + list(LEGEND_AXES_OUTSIDE_ANCH
 
 # long enough for a few periods of a dashed or dash-dotted pattern to show
 LEGEND_HANDLE_LENGTH = 3.0
+
+# symbols written in a condition table for a factor a condition has or lacks
+CONDITION_TABLE_PRESENT = "+"
+CONDITION_TABLE_ABSENT = "\u2212"
 
 
 def save_figure(
@@ -193,6 +200,157 @@ def add_legend(
     placement_kwargs["handlelength"] = LEGEND_HANDLE_LENGTH
 
     return target.legend(handles, labels, **{**placement_kwargs, **legend_kwargs})
+
+
+def _condition_table_entry(entry: bool | str | None) -> str:
+    """Convert one condition table entry to the text written in the table."""
+    if entry is None:
+        return ""
+    if isinstance(entry, bool | np.bool_):
+        return CONDITION_TABLE_PRESENT if entry else CONDITION_TABLE_ABSENT
+    return str(entry)
+
+
+def build_condition_table(
+    conditions_struct: list,
+    conditions_to_plot: list,
+    condition_table: dict[str, list | dict | Callable[[dict], bool | str | None]],
+) -> dict[str, list[str]]:
+    """
+    Build the text of a condition table, one row per factor and one column per condition.
+
+    A condition table replaces a legend of long condition descriptions by a grid of
+    ``+`` and ``−`` under the plot, telling for each factor (genotype, treatment, ...)
+    whether a condition has it.
+
+    Parameters:
+        conditions_struct (list): List of condition dicts, indexed by condition id.
+        conditions_to_plot (list): Ordered condition identifiers, one table column each.
+        condition_table (dict): Maps each row label (e.g. ``"raga-1:AID"``) to its
+            entries, given as a list with one entry per condition in
+            ``conditions_to_plot``, a dict mapping condition identifiers to entries
+            (missing conditions lack the factor), or a callable taking a condition
+            dict and returning its entry, e.g.
+            ``lambda c: "raga-1:AID" in c["description"]``. An entry is ``True``
+            (written ``+``), ``False`` (written ``−``), a string written as is
+            (e.g. an allele name), or ``None`` (left blank).
+
+    Returns:
+        dict[str, list[str]]: Row label to the text of each column, in the order of
+            ``conditions_to_plot``.
+
+    Raises:
+        ValueError: If a list of entries has a different length than
+            ``conditions_to_plot``, or a row is neither a list, a dict nor a callable.
+    """
+    table = {}
+    for row_label, entries in condition_table.items():
+        if callable(entries):
+            entries = [
+                entries(conditions_struct[condition_id])
+                for condition_id in conditions_to_plot
+            ]
+        elif isinstance(entries, dict):
+            entries = [
+                entries.get(condition_id, False) for condition_id in conditions_to_plot
+            ]
+        elif isinstance(entries, list | tuple):
+            if len(entries) != len(conditions_to_plot):
+                raise ValueError(
+                    f"Length of condition table row {row_label!r} ({len(entries)}) does not match number of conditions to plot ({len(conditions_to_plot)})."
+                )
+        else:
+            raise ValueError(
+                f"Condition table row {row_label!r} must be a list, a dict or a callable, got {type(entries).__name__}."
+            )
+        table[row_label] = [_condition_table_entry(entry) for entry in entries]
+    return table
+
+
+def add_condition_table(
+    ax: matplotlib.axes.Axes,
+    table: dict[str, list[str]],
+    show_row_labels: bool = True,
+    row_spacing: float = 1.5,
+    fontsize: float | str | None = None,
+    show_ticks: bool = True,
+) -> list[Annotation]:
+    """
+    Write a condition table under an axes, one row per factor and one column per x tick.
+
+    Column ``i`` is centered on x = ``i`` in data coordinates, which is where seaborn
+    draws the ``i``-th box, violin or swarm. Rows are spaced in points, so the table
+    keeps its look whatever the axes size; it is drawn outside the axes and is kept in
+    the figure by ``bbox_inches="tight"`` or a constrained layout. A tick marks each
+    column on the bottom spine, and the table starts below it, where tick labels
+    would be.
+
+    Parameters:
+        ax (matplotlib.axes.Axes): Axes to write the table under.
+        table (dict[str, list[str]]): Row label to the text of each column, e.g. from
+            ``build_condition_table``.
+        show_row_labels (bool): If ``True``, write the row labels left of the axes; turn
+            off for every panel but the first of a row of panels. (default: ``True``)
+        row_spacing (float): Distance between rows, in multiples of the font size.
+            (default: 1.5)
+        fontsize (float or str or None): Font size of the table. ``None`` uses the x
+            tick label size. (default: ``None``)
+        show_ticks (bool): If ``True``, draw an unlabelled x tick at each column.
+            (default: ``True``)
+
+    Returns:
+        list[matplotlib.text.Annotation]: The texts of the table, row by row, with each
+            row label (when shown) before its entries.
+    """
+    if fontsize is None:
+        fontsize = plt.rcParams["xtick.labelsize"]
+    fontsize_points = FontProperties(size=fontsize).get_size_in_points()
+    row_height = row_spacing * fontsize_points
+    label_padding = 0.5 * fontsize_points
+    n_columns = max((len(entries) for entries in table.values()), default=0)
+
+    top_offset = 0.5 * row_height
+    if show_ticks:
+        ax.set_xticks(range(n_columns))
+        ax.tick_params(axis="x", which="major", bottom=True, labelbottom=False)
+        # leave the tick and its label pad clear, as a tick label would
+        top_offset = max(
+            top_offset,
+            plt.rcParams["xtick.major.size"] + plt.rcParams["xtick.major.pad"],
+        )
+
+    texts = []
+    for row_index, (row_label, entries) in enumerate(table.items()):
+        y_offset = -(top_offset + row_index * row_height)
+        if show_row_labels:
+            texts.append(
+                ax.annotate(
+                    row_label,
+                    xy=(0, 0),
+                    xycoords="axes fraction",
+                    xytext=(-label_padding, y_offset),
+                    textcoords="offset points",
+                    ha="right",
+                    va="top",
+                    fontsize=fontsize,
+                    annotation_clip=False,
+                )
+            )
+        for column_index, entry in enumerate(entries):
+            texts.append(
+                ax.annotate(
+                    entry,
+                    xy=(column_index, 0),
+                    xycoords=("data", "axes fraction"),
+                    xytext=(0, y_offset),
+                    textcoords="offset points",
+                    ha="center",
+                    va="top",
+                    fontsize=fontsize,
+                    annotation_clip=False,
+                )
+            )
+    return texts
 
 
 def _line_legend_proxy(handle):

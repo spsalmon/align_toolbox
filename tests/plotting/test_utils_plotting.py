@@ -166,3 +166,69 @@ def test_get_hatches_leaves_unlisted_conditions_plain():
 def test_condition_styles_reject_list_of_wrong_length(function):
     with pytest.raises(ValueError, match="does not match"):
         function([0, 1, 2], ["--", "--"])
+
+
+def test_build_condition_table_accepts_lists_dicts_and_callables():
+    conditions_struct = [
+        {"condition_id": 0, "description": "no TIR, raga-1:AID"},
+        {"condition_id": 1, "description": "col-10:TIR, raga-1:AID"},
+        {"condition_id": 2, "description": "yap-1, col-10:TIR"},
+    ]
+    table = up.build_condition_table(
+        conditions_struct,
+        [2, 0, 1],
+        {
+            "raga-1:AID": lambda c: "raga-1:AID" in c["description"],
+            "col-10:TIR": {1: True, 2: True},
+            "yap-1": ["abt7", None, False],
+        },
+    )
+    assert table == {
+        "raga-1:AID": ["−", "+", "+"],
+        "col-10:TIR": ["+", "−", "+"],
+        "yap-1": ["abt7", "", "−"],
+    }
+
+
+@pytest.mark.parametrize("row", [[True], "raga-1:AID"])
+def test_build_condition_table_rejects_invalid_rows(row):
+    with pytest.raises(ValueError, match="(?i)condition table row"):
+        up.build_condition_table([{}, {}], [0, 1], {"raga-1:AID": row})
+
+
+def test_add_condition_table_aligns_columns_on_ticks_and_stacks_rows():
+    fig, ax = plt.subplots()
+    ax.set_xlim(-0.5, 2.5)
+    table = {"AID": ["+", "−", "+"], "TIR": ["−", "+", "+"]}
+    texts = up.add_condition_table(ax, table)
+    fig.canvas.draw()
+
+    labels = [text for text in texts if text.get_text() in table]
+    entries = [text for text in texts if text.get_text() not in table]
+    assert [text.get_text() for text in labels] == ["AID", "TIR"]
+    assert [text.get_text() for text in entries] == table["AID"] + table["TIR"]
+    tick_x = ax.transData.transform([(x, 0) for x in range(3)])[:, 0]
+    for row in (entries[:3], entries[3:]):
+        extents = [text.get_window_extent() for text in row]
+        np.testing.assert_allclose([(e.x0 + e.x1) / 2 for e in extents], tick_x)
+    axes_bottom = ax.get_window_extent().y0
+    first_row_top = entries[0].get_window_extent().y1
+    second_row_top = entries[3].get_window_extent().y1
+    assert axes_bottom > first_row_top > second_row_top
+    assert labels[0].get_window_extent().x1 < ax.get_window_extent().x0
+    ticks = ax.xaxis.get_major_ticks()
+    assert list(ax.get_xticks()) == [0, 1, 2]
+    assert all(tick.tick1line.get_visible() for tick in ticks)
+    assert not any(tick.label1.get_visible() for tick in ticks)
+    tick_bottom = min(tick.tick1line.get_window_extent().y0 for tick in ticks)
+    assert tick_bottom > first_row_top
+
+
+def test_add_condition_table_can_hide_row_labels_and_ticks():
+    fig, ax = plt.subplots()
+    ax.tick_params(axis="x", bottom=False)
+    texts = up.add_condition_table(
+        ax, {"AID": ["+", "−"]}, show_row_labels=False, show_ticks=False
+    )
+    assert [text.get_text() for text in texts] == ["+", "−"]
+    assert not any(tick.tick1line.get_visible() for tick in ax.xaxis.get_major_ticks())
