@@ -10,6 +10,7 @@ from matplotlib.container import ErrorbarContainer
 from matplotlib.font_manager import FontProperties
 from matplotlib.legend import Legend
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.text import Annotation
 from mpl_toolkits.axes_grid1 import Divider, Size
 
@@ -33,6 +34,9 @@ AVAILABLE_LEGEND_PLACEMENTS = list(Legend.codes) + list(LEGEND_AXES_OUTSIDE_ANCH
 
 # long enough for a few periods of a dashed or dash-dotted pattern to show
 LEGEND_HANDLE_LENGTH = 3.0
+
+# looks of the entries drawn by plot_legend, matching curves, boxes/violins and swarms
+AVAILABLE_LEGEND_KINDS = ["line", "patch", "marker"]
 
 # symbols written in a condition table for a factor a condition has or lacks
 CONDITION_TABLE_PRESENT = "+"
@@ -200,6 +204,217 @@ def add_legend(
     placement_kwargs["handlelength"] = LEGEND_HANDLE_LENGTH
 
     return target.legend(handles, labels, **{**placement_kwargs, **legend_kwargs})
+
+
+def _condition_legend_handle(
+    kind: str,
+    color,
+    linestyle: str,
+    hatch: str | None,
+    marker: str,
+    linewidth: float | None,
+    markersize: float | None,
+):
+    """Build the legend artist of one condition for ``plot_legend``."""
+    if kind == "line":
+        return Line2D([], [], color=color, linestyle=linestyle, linewidth=linewidth)
+    if kind == "patch":
+        return Patch(facecolor=color, hatch=hatch, linewidth=linewidth)
+    return Line2D(
+        [], [], color=color, marker=marker, markersize=markersize, linestyle="None"
+    )
+
+
+def _row_major_order(n_entries: int, ncols: int) -> list[int]:
+    """
+    Order entries so a column-filled legend reads them row by row.
+
+    Matplotlib fills legend columns top to bottom, giving the first
+    ``n_entries % ncols`` columns one extra entry, which is the shape of a grid
+    filled row by row with a shorter last row. Listing the entries column by column
+    of that grid thus makes them read left to right, then top to bottom.
+    """
+    return [
+        entry for column in range(ncols) for entry in range(column, n_entries, ncols)
+    ]
+
+
+def plot_legend(
+    conditions_struct: list,
+    conditions_to_plot: list,
+    legend: dict | None = None,
+    colors: list | dict | None = None,
+    linestyles: list | dict | None = None,
+    hatches: list | dict | None = None,
+    kind: str = "line",
+    marker: str = "o",
+    ncols: int = 1,
+    nrows: int | None = None,
+    fill: str = "columns",
+    title: str | None = None,
+    fontsize: float | str | None = None,
+    title_fontsize: float | str | None = None,
+    handlelength: float = LEGEND_HANDLE_LENGTH,
+    handleheight: float | None = None,
+    handletextpad: float | None = None,
+    labelspacing: float | None = None,
+    columnspacing: float | None = None,
+    borderpad: float | None = None,
+    frameon: bool | None = None,
+    linewidth: float | None = None,
+    markersize: float | None = None,
+    figsize: tuple[float, float] | None = None,
+    margin: float = 0.0,
+    ax: matplotlib.axes.Axes | None = None,
+    **legend_kwargs,
+) -> matplotlib.figure.Figure:
+    """
+    Render only the legend of a set of conditions, as a figure of its own.
+
+    Entries use the same labels, colors, line styles and hatches as the plots given
+    the same arguments, so a set of plots drawn with ``legend_placement=None`` can
+    share one separate legend. Unless ``figsize`` is given, a new figure is sized to
+    the legend, so it saves without margins.
+
+    Spacings and handle sizes are in multiples of the font size, as in
+    ``matplotlib.axes.Axes.legend``; ``None`` uses the matplotlib rcParams.
+
+    Parameters:
+        conditions_struct (list): List of condition dicts.
+        conditions_to_plot (list): Ordered condition identifiers, one entry each.
+        legend (dict or None): Legend spec passed to ``build_legend``.
+            (default: ``None``)
+        colors (list or dict or None): Color spec passed to ``get_colors``.
+            (default: ``None``)
+        linestyles (list or dict or None): Line style spec passed to
+            ``get_linestyles``; only used when ``kind`` is ``"line"``.
+            (default: ``None``)
+        hatches (list or dict or None): Hatch spec passed to ``get_hatches``; only
+            used when ``kind`` is ``"patch"``. (default: ``None``)
+        kind (str): Look of the entries, matching the plot they go with:
+            ``"line"`` for curves, ``"patch"`` for box and violin plots,
+            ``"marker"`` for swarm and scatter plots. (default: ``"line"``)
+        marker (str): Matplotlib marker of ``"marker"`` entries. (default: ``"o"``)
+        ncols (int): Number of columns. Ignored when ``nrows`` is given.
+            (default: 1)
+        nrows (int or None): Number of rows; the number of columns is then the
+            fewest that fit every entry, e.g. ``nrows=1`` lays the legend out in a
+            single row. (default: ``None``)
+        fill (str): ``"columns"`` lists the entries top to bottom, then left to
+            right; ``"rows"`` lists them left to right, then top to bottom.
+            (default: ``"columns"``)
+        title (str or None): Title written above the entries. (default: ``None``)
+        fontsize (float or str or None): Font size of the labels, in points or as
+            a name such as ``"small"``; it also scales every spacing below.
+            (default: ``None``)
+        title_fontsize (float or str or None): Font size of the title.
+            (default: ``None``)
+        handlelength (float): Length of the handles. (default: ``LEGEND_HANDLE_LENGTH``)
+        handleheight (float or None): Height of the handles; makes ``"patch"``
+            entries taller. (default: ``None``)
+        handletextpad (float or None): Gap between a handle and its label.
+            (default: ``None``)
+        labelspacing (float or None): Vertical gap between rows. (default: ``None``)
+        columnspacing (float or None): Horizontal gap between columns.
+            (default: ``None``)
+        borderpad (float or None): Gap between the frame and the entries.
+            (default: ``None``)
+        frameon (bool or None): Whether to draw the frame. (default: ``None``)
+        linewidth (float or None): Line width of ``"line"`` handles and edge width
+            of ``"patch"`` handles, in points. (default: ``None``)
+        markersize (float or None): Marker size of ``"marker"`` handles, in points.
+            (default: ``None``)
+        figsize (tuple[float, float] or None): Size of a new figure in inches, with
+            the legend centred in it. ``None`` fits the figure to the legend.
+            (default: ``None``)
+        margin (float): Blank space added around the legend on each side, in inches,
+            when the figure is fitted to it. (default: 0.0)
+        ax (matplotlib.axes.Axes or None): Axes to draw the legend in, centred, with
+            the axes itself hidden; ``figsize`` and ``margin`` are then ignored.
+            ``None`` creates a new figure. (default: ``None``)
+        **legend_kwargs: Any other keyword argument of
+            ``matplotlib.axes.Axes.legend``, e.g. ``alignment`` or ``markerfirst``.
+
+    Returns:
+        matplotlib.figure.Figure: The figure holding the legend.
+
+    Raises:
+        ValueError: If ``kind`` is not in ``AVAILABLE_LEGEND_KINDS``, ``fill`` is
+            neither ``"columns"`` nor ``"rows"``, or ``ncols`` or ``nrows`` is
+            smaller than 1.
+    """
+    if kind not in AVAILABLE_LEGEND_KINDS:
+        raise ValueError(
+            f"Invalid legend kind: {kind}. Must be one of {AVAILABLE_LEGEND_KINDS}."
+        )
+    if fill not in ("columns", "rows"):
+        raise ValueError(f"Invalid fill: {fill}. Must be 'columns' or 'rows'.")
+    if ncols < 1 or (nrows is not None and nrows < 1):
+        raise ValueError("ncols and nrows must be at least 1.")
+
+    color_palette = get_colors(conditions_to_plot, colors)
+    line_styles = get_linestyles(conditions_to_plot, linestyles)
+    hatch_patterns = get_hatches(conditions_to_plot, hatches)
+    handles = [
+        _condition_legend_handle(
+            kind, color, linestyle, hatch, marker, linewidth, markersize
+        )
+        for color, linestyle, hatch in zip(color_palette, line_styles, hatch_patterns)
+    ]
+    labels = [
+        build_legend(conditions_struct[condition_id], legend)
+        for condition_id in conditions_to_plot
+    ]
+
+    n_entries = len(labels)
+    if nrows is not None:
+        ncols = -(-n_entries // nrows)
+    ncols = max(min(ncols, n_entries), 1)
+    if fill == "rows":
+        order = _row_major_order(n_entries, ncols)
+        handles = [handles[i] for i in order]
+        labels = [labels[i] for i in order]
+
+    style_kwargs = {
+        "title": title,
+        "fontsize": fontsize,
+        "title_fontsize": title_fontsize,
+        "handleheight": handleheight,
+        "handletextpad": handletextpad,
+        "labelspacing": labelspacing,
+        "columnspacing": columnspacing,
+        "borderpad": borderpad,
+        "frameon": frameon,
+    }
+    style_kwargs = {
+        key: value for key, value in style_kwargs.items() if value is not None
+    }
+    legend_kwargs = {
+        "ncols": ncols,
+        "handlelength": handlelength,
+        **style_kwargs,
+        **legend_kwargs,
+    }
+
+    owns_figure = ax is None
+    if owns_figure:
+        fig, ax = plt.subplots(layout="none")
+    else:
+        fig = ax.figure
+    ax.set_axis_off()
+    drawn_legend = add_legend(ax, "center", handles, labels, **legend_kwargs)
+
+    if owns_figure:
+        if figsize is None:
+            legend_extent = drawn_legend.get_window_extent()
+            figsize = (
+                legend_extent.width / fig.dpi + 2 * margin,
+                legend_extent.height / fig.dpi + 2 * margin,
+            )
+        fig.set_size_inches(figsize)
+        ax.set_position((0, 0, 1, 1))
+        plt.show()
+    return fig
 
 
 def _condition_table_entry(entry: bool | str | None) -> str:

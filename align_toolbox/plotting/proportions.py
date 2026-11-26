@@ -280,6 +280,7 @@ def _get_proportion_model(
     y_axis_label: str | None = None,
     poly_degree: int = 1,
     plot_model: bool = True,
+    legend_placement: str | None = "best",
 ) -> Any:
     """
     Fit a polynomial OLS model to the log-log relationship between two series.
@@ -298,6 +299,9 @@ def _get_proportion_model(
         poly_degree (int) : Degree of the polynomial features.  Defaults to ``1``.
         plot_model (bool) : If ``True``, display a scatter + fitted model plot with
             confidence bands.  Defaults to ``True``.
+        legend_placement (str or None) : Legend placement of the diagnostic plot,
+            passed to ``add_legend``; ``None`` hides the legend.  Defaults to
+            ``"best"``.
 
     Returns:
         sklearn.pipeline.Pipeline : Fitted pipeline with an additional
@@ -406,7 +410,7 @@ def _get_proportion_model(
             color="red",
             label=f"{int((1-alpha)*100)}% CI",
         )
-        add_legend()
+        add_legend(placement=legend_placement)
         plt.show()
 
     # Add method to model for getting confidence intervals
@@ -1211,6 +1215,7 @@ def plot_deviation_from_model_at_ecdysis(
         y_axis_label=ylbl,
         poly_degree=poly_degree,
         plot_model=True,
+        legend_placement=legend_placement,
     )
 
     # figure got used for the control model, create a new one for the deviations plot
@@ -1395,6 +1400,7 @@ def plot_deviation_from_model_development_percentage(
         y_axis_label=ylbl,
         poly_degree=poly_degree,
         plot_model=True,
+        legend_placement=legend_placement,
     )
 
     # figure got used for the control model, create a new one for the deviations plot

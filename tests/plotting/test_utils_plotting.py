@@ -1,7 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from matplotlib.colors import to_rgba
+from matplotlib.patches import Patch
 
+from align_toolbox.plotting import boxplots, curves, heterogeneity, proportions
 from align_toolbox.plotting import utils_plotting as up
 
 
@@ -232,3 +235,184 @@ def test_add_condition_table_can_hide_row_labels_and_ticks():
     )
     assert [text.get_text() for text in texts] == ["+", "−"]
     assert not any(tick.tick1line.get_visible() for tick in ax.xaxis.get_major_ticks())
+
+
+def _legend_entries(legend):
+    """Label, color, line style and hatch of each entry of a drawn legend."""
+    entries = []
+    for text, handle in zip(legend.get_texts(), legend.legend_handles):
+        if isinstance(handle, Patch):
+            style = (to_rgba(handle.get_facecolor()), None, handle.get_hatch())
+        else:
+            style = (to_rgba(handle.get_color()), handle.get_linestyle(), None)
+        entries.append((text.get_text(), *style))
+    return entries
+
+
+def test_plot_legend_matches_the_legend_of_a_curve_plot(conditions_struct):
+    styles = {
+        "legend": {"description": "", "food": ""},
+        "colors": ["red", "blue"],
+        "linestyles": {1: "--"},
+    }
+    plot = curves.plot_aggregated_series(
+        conditions_struct, "body_seg_volume", [0, 1], n_points=10, **styles
+    )
+    fig = up.plot_legend(conditions_struct, [0, 1], **styles)
+    assert _legend_entries(fig.axes[0].get_legend()) == _legend_entries(
+        plot.axes[0].get_legend()
+    )
+    assert _legend_entries(fig.axes[0].get_legend())[1] == (
+        "condition 1, OP50",
+        to_rgba("blue"),
+        "--",
+        None,
+    )
+
+
+def test_plot_legend_matches_the_hatched_legend_of_a_box_plot(conditions_struct):
+    styles = {"colors": ["red", "blue"], "hatches": {1: "//"}}
+    plot = boxplots.boxplot(
+        conditions_struct, "body_seg_volume_at_ecdysis", [0, 1], **styles
+    )
+    fig = up.plot_legend(conditions_struct, [0, 1], kind="patch", **styles)
+    entries = _legend_entries(fig.axes[0].get_legend())
+    plot_entries = _legend_entries(plot.legends[0])
+    assert [entry[0] for entry in entries] == [entry[0] for entry in plot_entries]
+    assert [entry[3] for entry in entries] == [entry[3] for entry in plot_entries]
+    assert [entry[1] for entry in entries] == [to_rgba("red"), to_rgba("blue")]
+
+
+def test_plot_legend_figure_is_sized_to_the_legend_alone(conditions_struct):
+    fig = up.plot_legend(conditions_struct, [0, 1], kind="marker")
+    ax = fig.axes[0]
+    assert not ax.axison
+    legend_extent = ax.get_legend().get_window_extent()
+    np.testing.assert_allclose(
+        fig.get_size_inches() * fig.dpi,
+        [legend_extent.width, legend_extent.height],
+        rtol=0.01,
+    )
+    assert all(handle.get_marker() == "o" for handle in ax.get_legend().legend_handles)
+
+
+def _five_conditions():
+    return [
+        {"condition_id": condition_id, "name": name}
+        for condition_id, name in enumerate("abcde")
+    ]
+
+
+def _entry_positions(legend):
+    """Label of each entry with its (column, row) rank in the drawn legend."""
+    legend.figure.draw_without_rendering()
+    extents = {text.get_text(): text.get_window_extent() for text in legend.get_texts()}
+    xs = sorted({round(e.x0) for e in extents.values()})
+    ys = sorted({round(e.y0) for e in extents.values()}, reverse=True)
+    return {
+        label: (xs.index(round(e.x0)), ys.index(round(e.y0)))
+        for label, e in extents.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "fill, expected",
+    [
+        ("columns", {"a": (0, 0), "b": (0, 1), "c": (1, 0), "d": (1, 1), "e": (2, 0)}),
+        ("rows", {"a": (0, 0), "b": (1, 0), "c": (2, 0), "d": (0, 1), "e": (1, 1)}),
+    ],
+)
+def test_plot_legend_fills_columns_or_rows(fill, expected):
+    fig = up.plot_legend(
+        _five_conditions(), list(range(5)), legend={"name": ""}, ncols=3, fill=fill
+    )
+    assert _entry_positions(fig.axes[0].get_legend()) == expected
+
+
+@pytest.mark.parametrize("nrows, n_columns", [(1, 5), (2, 3), (5, 1), (9, 1)])
+def test_plot_legend_nrows_sets_the_fewest_columns_that_fit(nrows, n_columns):
+    fig = up.plot_legend(
+        _five_conditions(), list(range(5)), legend={"name": ""}, nrows=nrows
+    )
+    columns = {
+        column for column, _ in _entry_positions(fig.axes[0].get_legend()).values()
+    }
+    assert len(columns) == n_columns
+
+
+def test_plot_legend_margin_and_figsize_set_the_figure_size(conditions_struct):
+    fitted = up.plot_legend(conditions_struct, [0, 1])
+    padded = up.plot_legend(conditions_struct, [0, 1], margin=0.25)
+    np.testing.assert_allclose(
+        padded.get_size_inches(), fitted.get_size_inches() + 0.5, rtol=0.01
+    )
+    fixed = up.plot_legend(conditions_struct, [0, 1], figsize=(4, 2))
+    np.testing.assert_allclose(fixed.get_size_inches(), (4, 2))
+    extent = fixed.axes[0].get_legend().get_window_extent()
+    np.testing.assert_allclose(
+        [(extent.x0 + extent.x1) / 2, (extent.y0 + extent.y1) / 2],
+        np.array([4, 2]) * fixed.dpi / 2,
+        rtol=0.01,
+    )
+
+
+def test_plot_legend_larger_font_and_handles_make_a_larger_legend(conditions_struct):
+    small = up.plot_legend(conditions_struct, [0, 1], fontsize=8, handlelength=2)
+    large = up.plot_legend(conditions_struct, [0, 1], fontsize=16, handlelength=6)
+    assert np.all(large.get_size_inches() > small.get_size_inches())
+    assert large.axes[0].get_legend().handlelength == 6
+
+
+@pytest.mark.parametrize("kwargs", [{"fill": "diagonal"}, {"ncols": 0}, {"nrows": 0}])
+def test_plot_legend_rejects_invalid_layout(conditions_struct, kwargs):
+    with pytest.raises(ValueError):
+        up.plot_legend(conditions_struct, [0, 1], **kwargs)
+
+
+def test_plot_legend_draws_into_given_axes(conditions_struct):
+    fig, axes = plt.subplots(1, 2)
+    returned = up.plot_legend(conditions_struct, [1, 0], ax=axes[1])
+    assert returned is fig
+    assert [text.get_text() for text in axes[1].get_legend().get_texts()] == [
+        "Condition 1",
+        "Condition 0",
+    ]
+
+
+def test_plot_legend_rejects_unknown_kind(conditions_struct):
+    with pytest.raises(ValueError):
+        up.plot_legend(conditions_struct, [0, 1], kind="bar")
+
+
+VOLUME, LENGTH = "body_seg_volume_at_ecdysis", "body_seg_length_at_ecdysis"
+PLOTS_WITHOUT_LEGEND = {
+    "aggregated": lambda c, **kw: curves.plot_aggregated_series(
+        c, "body_seg_volume", [0, 1], n_points=10, **kw
+    ),
+    "violin": lambda c, **kw: boxplots.violinplot(c, VOLUME, [0, 1], **kw),
+    "box": lambda c, **kw: boxplots.boxplot(c, VOLUME, [0, 1], **kw),
+    "swarm": lambda c, **kw: boxplots.swarmplot(c, VOLUME, [0, 1], **kw),
+    "cv": lambda c, **kw: heterogeneity.plot_cv_at_ecdysis(c, VOLUME, [0, 1], **kw),
+    "std": lambda c, **kw: heterogeneity.plot_std_at_ecdysis(c, VOLUME, [0, 1], **kw),
+    "model_comparison": lambda c, **kw: proportions.plot_model_comparison_at_ecdysis(
+        c, VOLUME, LENGTH, [0, 1], single_plot=False, **kw
+    ),
+    "correlation": lambda c, **kw: proportions.plot_correlation_at_ecdysis(
+        c, VOLUME, LENGTH, [0, 1], **kw
+    ),
+    "deviation": lambda c, **kw: proportions.plot_deviation_from_model_at_ecdysis(
+        c, VOLUME, LENGTH, 0, [0, 1], **kw
+    ),
+    "normalized": lambda c, **kw: proportions.plot_normalized_proportions_at_ecdysis(
+        c, VOLUME, LENGTH, 0, [0, 1], **kw
+    ),
+}
+
+
+@pytest.mark.parametrize("name", PLOTS_WITHOUT_LEGEND)
+def test_plots_can_be_drawn_without_any_legend(conditions_struct, shown_figures, name):
+    PLOTS_WITHOUT_LEGEND[name](conditions_struct, legend_placement=None)
+    assert shown_figures
+    for fig in shown_figures:
+        assert not fig.legends
+        assert all(ax.get_legend() is None for ax in fig.axes)

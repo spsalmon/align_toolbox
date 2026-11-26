@@ -871,3 +871,11 @@ def test_fitted_percentage_plots_use_timepoint_labels(fitted_percentages):
         fig = pmp.plot_individual_consistency(fitted_percentages, 1, timepoint_b)
         assert fig.axes[0].get_xlabel() == "Deviation at M1 (%)"
         assert fig.axes[0].get_ylabel() == "Deviation at M3 (%)"
+
+
+@pytest.mark.parametrize("name", PLOTS)
+def test_plot_can_be_drawn_without_any_legend(result, tables, name):
+    plot, _ = _calls(result, tables)[name]
+    fig = plot(legend_placement=None)
+    assert not fig.legends
+    assert all(ax.get_legend() is None for ax in fig.axes)
